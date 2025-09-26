@@ -1,0 +1,185 @@
+{
+  "code_extensions": {
+    "kt": "kotlin",
+    "kts": "kotlin",
+    "java": "java",
+    "dart": "dart",
+    "pas": "pascal",
+    "pp": "pascal"
+  },
+  "noncode_ts_grammar": {
+    "md": "markdown",
+    "json": "json",
+    "jsonl": "json",
+    "ndjson": "json",
+    "arb": "json",
+    "yaml": "yaml",
+    "yml": "yaml",
+    "lock": "yaml",
+    "xml": "xml",
+    "plist": "xml",
+    "entitlements": "xml",
+    "storyboard": "xml",
+    "xib": "xml",
+    "toml": "toml",
+    "properties": "properties",
+    "html": "html",
+    "css": "css",
+    "svg": "xml",
+    "pro": "properties",
+    "cfg": "properties"
+  },
+  "grammar_queries": {
+    "Package": {
+      "java": [
+        "(package_declaration) @package"
+      ],
+      "kotlin": [
+        "(package_directive) @package",
+        "(package_header) @package"
+      ],
+      "dart": [
+        "(library_declaration) @package"
+      ],
+      "pascal": [
+        "(program (moduleName) @package)",
+        "(library (moduleName) @package)",
+        "(unit (moduleName) @package)"
+      ]
+    },
+    "Type": {
+      "java": [
+        "(class_declaration) @type",
+        "(interface_declaration) @type",
+        "(enum_declaration) @type",
+        "(record_declaration) @type",
+        "(annotation_type_declaration) @type"
+      ],
+      "kotlin": [
+        "(class_declaration) @type",
+        "(object_declaration) @type",
+        "(interface_declaration) @type"
+      ],
+      "dart": [
+        "(class_declaration) @type",
+        "(mixin_declaration) @type",
+        "(extension_declaration) @type",
+        "(enum_declaration) @type"
+      ],
+      "pascal": [
+        "(declClass) @type",
+        "(declIntf) @type",
+        "(declHelper) @type",
+        "(declEnum) @type"
+      ]
+    },
+    "Constructor": {
+      "java": [
+        "(constructor_declaration) @constructor",
+        "(compact_constructor_declaration) @constructor"
+      ],
+      "kotlin": [
+        "(primary_constructor) @constructor",
+        "(secondary_constructor) @constructor"
+      ],
+      "dart": [
+        "(constructor_declaration) @constructor",
+        "(factory_constructor_declaration) @constructor",
+        "(constructor_signature) @constructor"
+      ],
+      "pascal": []
+    },
+    "Method": {
+      "java": [
+        "(method_declaration) @method"
+      ],
+      "kotlin": [
+        "(function_declaration) @method"
+      ],
+      "dart": [
+        "(method_declaration) @method",
+        "(function_declaration) @method"
+      ],
+      "pascal": [
+        "(defProc) @method"
+      ]
+    },
+    "Field": {
+      "java": [
+        "(field_declaration) @field",
+        "(constant_declaration) @field"
+      ],
+      "kotlin": [
+        "(property_declaration) @field"
+      ],
+      "dart": [
+        "(field_declaration) @field",
+        "(top_level_variable_declaration) @field"
+      ],
+      "pascal": [
+        "(declField) @field",
+        "(declProp) @field",
+        "(declVar) @field",
+        "(declConst) @field"
+      ]
+    },
+    "Accessor": {
+      "java": [],
+      "kotlin": [
+        "(getter) @accessor",
+        "(setter) @accessor",
+        "(property_declaration (getter) @accessor)",
+        "(property_declaration (setter) @accessor)"
+      ],
+      "dart": [],
+      "pascal": []
+    },
+    "Initializer": {
+      "java": [
+        "(static_initializer) @initializer",
+        "(instance_initializer) @initializer"
+      ],
+      "kotlin": [
+        "(init_declaration) @initializer",
+        "(initializer) @initializer"
+      ],
+      "dart": [],
+      "pascal": [
+        "(initialization) @initializer",
+        "(finalization) @initializer"
+      ]
+    },
+    "EnumMember": {
+      "java": [
+        "(enum_constant) @enum_member"
+      ],
+      "kotlin": [
+        "(enum_entry) @enum_member"
+      ],
+      "dart": [
+        "(enum_constant) @enum_member"
+      ],
+      "pascal": [
+        "(declEnumValue) @enum_member"
+      ]
+    },
+    "AnnotationElement": {
+      "java": [
+        "(annotation_type_element_declaration) @annotation_element",
+        "(annotation_method_declaration) @annotation_element"
+      ],
+      "kotlin": [],
+      "dart": [],
+      "pascal": []
+    },
+    "RecordComponent": {
+      "java": [
+        "(record_component) @record_component",
+        "(record_component_list (record_component) @record_component)"
+      ],
+      "kotlin": [],
+      "dart": [],
+      "pascal": []
+    }
+  }
+}
