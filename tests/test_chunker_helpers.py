@@ -53,18 +53,17 @@ def _import_chunker():
     2) Dynamically load the first src/**/chunker.py found
     """
     try:
-        import test_chunker_helpers as m  # type: ignore
+        import chunker as m  # type: ignore
         return m
-    except Exception:
-        pass
-    for p in SRC.rglob("chunker.py"):
-        spec = spec_from_file_location("chunker", p)
-        if spec and spec.loader:
-            mod = module_from_spec(spec)
-            sys.modules["chunker"] = mod
-            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-            return mod
-    raise ImportError(f"Could not locate test_chunker_helpers.py under {SRC}")
+    except ImportError as exc:
+        for p in SRC.rglob("chunker.py"):
+            spec = spec_from_file_location("chunker", p)
+            if spec and spec.loader:
+                mod = module_from_spec(spec)
+                sys.modules["chunker"] = mod
+                spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                return mod
+        raise ImportError(f"Could not locate chunker.py under {SRC}") from exc
 
 chunker = _import_chunker()
 
