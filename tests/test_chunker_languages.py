@@ -1,3 +1,4 @@
+import json
 import unittest
 import sys
 from pathlib import Path
@@ -9,7 +10,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 # Real Tree-sitter must be available for these tests
-from tree_sitter_language_pack import get_parser
+try:
+    from tree_sitter_language_pack import get_parser
+except ModuleNotFoundError:  # pragma: no cover - environment dependent
+    import pytest
+
+    pytest.skip("tree_sitter_language_pack not installed", allow_module_level=True)
+
 import chunker  # type: ignore
 
 from tests.fixtures import ensure_fixtures, load_bytes
@@ -27,6 +34,9 @@ class TestChunkerWithTreeSitter(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         ensure_fixtures()
+        cls.config_path = Path(chunker.__file__).with_name("grammar_queries.json")
+        with cls.config_path.open("r", encoding="utf-8") as handle:
+            cls.grammar_config = json.load(handle)
 
     def _parse(self, lang: str, data: bytes):
         parser = get_parser(lang)
@@ -119,6 +129,12 @@ class TestChunkerWithTreeSitter(unittest.TestCase):
                     # At least one chunk for this node should have the expected suffix
                     self.assertTrue(any(c.signature.endswith(expected_suffix) for c in method_chunks),
                                     f"No chunk had expected signature suffix {expected_suffix}")
+
+    def test_json_configuration_matches_chunker_constants(self):
+        data = self.grammar_config
+        self.assertEqual(data["code_extensions"], chunker.CODE_EXTENSIONS)
+        self.assertEqual(data["noncode_ts_grammar"], chunker.NONCODE_TS_GRAMMAR)
+        self.assertEqual(data["grammar_queries"], chunker.GRAMMAR_QUERIES)
 
 
 if __name__ == "__main__":

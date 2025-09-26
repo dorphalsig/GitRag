@@ -167,3 +167,25 @@ docs_fts USING fts5(
 * Contract: `{file, action}` with `process` → upsert everywhere, `delete` → remove everywhere
 * Tree-sitter provides consistent node boundaries across code and config formats
 * Index = HEAD only, deletions handled cleanly
+
+---
+
+## Appendix — Grammar Configuration JSON
+
+`src/grammar_queries.json` centralizes the language metadata that powers the chunker:
+
+```json
+{
+  "code_extensions": { "kt": "kotlin", "java": "java", "pas": "pascal", ... },
+  "noncode_ts_grammar": { "md": "markdown", "yaml": "yaml", ... },
+  "grammar_queries": {
+    "Package": { "java": ["(package_declaration) @package"], ... },
+    "Type": { "kotlin": ["(class_declaration) @type", ...], ... },
+    ...
+  }
+}
+```
+
+- `code_extensions` maps file extensions (without leading `.`) to Tree-sitter language identifiers used for code chunking.
+- `noncode_ts_grammar` maps non-code extensions to the Tree-sitter grammar name used for structural chunking.
+- `grammar_queries` is a nested object keyed by semantic category (`Package`, `Type`, `Method`, etc.). Each category maps language identifiers to an array of S-expression query strings whose `@capture` matches the category name (lowercased). Helpers such as `_build_containers` and `_get_package_name` derive their behavior from this data, so new languages or grammar tweaks should extend this JSON file rather than hardcoding values in Python.

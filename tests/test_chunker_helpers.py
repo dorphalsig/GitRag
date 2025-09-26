@@ -2,6 +2,7 @@
 #   _newline_aligned_ranges, _nearest_newline, _byte_to_point, _has_blank_line_between
 # No Tree-sitter needed at runtime; we stub modules only to import chunker.
 
+import json
 import sys
 import types
 import unittest
@@ -107,6 +108,10 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
         cls.nearest_newline = staticmethod(chunker._nearest_newline)
         cls.byte_to_point = staticmethod(chunker._byte_to_point)
         cls.has_blank_line_between = staticmethod(chunker._has_blank_line_between)
+        cfg_path = Path(chunker.__file__).with_name("grammar_queries.json")
+        with cfg_path.open("r", encoding="utf-8") as handle:
+            cls.grammar_config = json.load(handle)
+        cls.CONFIG_PATH = cfg_path
 
     def test_no_newlines_overlap0(self):
         """No-newline files split by size without gaps or overlaps."""
@@ -187,6 +192,13 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
         data2 = a + between2 + b
         self.assertTrue(self.has_blank_line_between(data1, len(a) - 1, len(a) + len(between1) + 1))
         self.assertTrue(self.has_blank_line_between(data2, len(a) - 1, len(a) + len(between2) + 1))
+
+    def test_json_config_parses_and_matches_constants(self):
+        """Ensure the grammar JSON exists, parses, and matches chunker constants."""
+        self.assertTrue(self.CONFIG_PATH.exists())
+        self.assertEqual(self.grammar_config["code_extensions"], chunker.CODE_EXTENSIONS)
+        self.assertEqual(self.grammar_config["noncode_ts_grammar"], chunker.NONCODE_TS_GRAMMAR)
+        self.assertEqual(self.grammar_config["grammar_queries"], chunker.GRAMMAR_QUERIES)
 
 
 if __name__ == "__main__":

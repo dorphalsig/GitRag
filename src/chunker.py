@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,216 +34,35 @@ FALLBACK_OVERLAP_RATIO = 0.10
 
 _ROOT_ATOM_RE = re.compile(r"\(+\s*([A-Za-z_]\w*)\b")
 
-CODE_EXTENSIONS = {"kt": "kotlin", "kts": "kotlin", "java": "java", "dart": "dart", "pas": "pascal", "pp": "pascal"}
 
-NONCODE_TS_GRAMMAR = {"md": "markdown", "json": "json", "jsonl": "json", "ndjson": "json", "arb": "json",
-                      "yaml": "yaml", "yml": "yaml", "lock": "yaml", "xml": "xml", "plist": "xml",
-                      "entitlements": "xml", "storyboard": "xml", "xib": "xml", "toml": "toml",
-                      "properties": "properties", "html": "html", "css": "css", "svg": "xml", "pro": "properties",
-                      "cfg": "properties"}
+def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
+    """Load extensions and Tree-sitter query patterns from JSON configuration."""
+    cfg_path = Path(__file__).with_name("grammar_queries.json")
+    with cfg_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
 
-# ========= Package / module-ish =========
-PACKAGE_LIKE_SEXPR = {
-    "java": [
-        "(package_declaration) @package",
-    ],
-    "kotlin": [
-        # Both spellings exist across grammar versions
-        "(package_directive) @package",
-        "(package_header) @package",
-    ],
-    "dart": [
-        # Dart has library directives instead of packages
-        "(library_declaration) @package",
-    ],
-    "pascal": [
-        "(program (moduleName) @package)",
-        "(library (moduleName) @package)",
-        "(unit (moduleName) @package)"
-    ]
-}
+    code_ext = {k: str(v) for k, v in data.get("code_extensions", {}).items()}
+    noncode_ext = {k: str(v) for k, v in data.get("noncode_ts_grammar", {}).items()}
+    queries_raw = data.get("grammar_queries", {})
+    grammar_queries: dict[str, dict[str, list[str]]] = {}
+    for category, lang_map in queries_raw.items():
+        grammar_queries[category] = {lang: list(patterns) for lang, patterns in lang_map.items()}
+    return code_ext, noncode_ext, grammar_queries
 
-# ========= Types (top-level) =========
-TYPE_LIKE_SEXPR = {
-    "java": [
-        "(class_declaration) @type",
-        "(interface_declaration) @type",
-        "(enum_declaration) @type",
-        "(record_declaration) @type",
-        "(annotation_type_declaration) @type",
-    ],
-    "kotlin": [
-        "(class_declaration) @type",
-        "(object_declaration) @type",  # includes companion objects
-        "(interface_declaration) @type",
-        # enums are classes in Kotlin; class_declaration covers them
-    ],
-    "dart": [
-        "(class_declaration) @type",
-        "(mixin_declaration) @type",
-        "(extension_declaration) @type",
-        "(enum_declaration) @type",
-    ],
-    "pascal": [
-        "(declClass) @type",  # class/record/object/objc*
-        "(declIntf) @type",  # interface/dispinterface
-        "(declHelper) @type",  # type/class/record helpers
-        "(declEnum) @type",  # enum types
-    ]
-}
 
-# ========= Constructors =========
-CONSTRUCTOR_LIKE_SEXPR = {
-    "java": [
-        "(constructor_declaration) @constructor",
-        "(compact_constructor_declaration) @constructor",  # Java records
-    ],
-    "kotlin": [
-        "(primary_constructor) @constructor",
-        "(secondary_constructor) @constructor",
-    ],
-    "dart": [
-        "(constructor_declaration) @constructor",
-        "(factory_constructor_declaration) @constructor",
-        # Some grammar variants expose "(constructor_signature)" as well:
-        "(constructor_signature) @constructor",
-    ],
-    "pascal": []
-}
+CODE_EXTENSIONS, NONCODE_TS_GRAMMAR, GRAMMAR_QUERIES = _load_grammar_config()
 
-# ========= Methods / functions =========
-# (We include top-level functions where they exist in the grammar.)
-METHOD_LIKE_SEXPR = {
-    "java": [
-        "(method_declaration) @method",
-    ],
-    "kotlin": [
-        "(function_declaration) @method",  # covers top-level & member funcs
-    ],
-    "dart": [
-        "(method_declaration) @method",
-        "(function_declaration) @method",  # top-level functions
-    ],
-    "pascal": [
-        "(defProc) @method",  # procedures/functions/constructors/destructors with bodies
-    ]
-}
-
-# ========= Fields / properties =========
-FIELD_LIKE_SEXPR = {
-    "java": [
-        "(field_declaration) @field",
-        "(constant_declaration) @field",  # interface/annotation constants
-    ],
-    "kotlin": [
-        "(property_declaration) @field",  # properties (vals/vars)
-    ],
-    "dart": [
-        "(field_declaration) @field",  # class fields
-        "(top_level_variable_declaration) @field",  # top-level vars
-    ],
-    "pascal": [
-        "(declField) @field",  # fields in classes/records
-        "(declProp) @field",  # properties (signature only)
-        "(declVar) @field",  # class/record vars in sections
-        "(declConst) @field",  # class/record consts in sections
-    ]
-}
-
-# ========= Accessors (getters/setters) =========
-# Note: In Java, accessors are ordinary methods; in Dart, getters/setters
-# are represented as method/method-signature forms. Kotlin exposes explicit
-# accessor nodes attached to property_declaration in current grammars.
-ACCESSOR_LIKE_SEXPR = {
-    "java": [
-        # Intentionally empty; model them via METHOD_LIKE_SEXPR
-    ],
-    "kotlin": [
-        "(getter) @accessor",
-        "(setter) @accessor",
-        # Some grammar versions nest accessors; these keep you safe:
-        "(property_declaration (getter) @accessor)",
-        "(property_declaration (setter) @accessor)",
-    ],
-    "dart": [
-        # Treat as methods (get/set keywords appear inside method nodes)
-        # so METHOD_LIKE_SEXPR will catch them.
-    ],
-    "pascal": []
-}
-
-# ========= Initializers (static/instance/init blocks) =========
-INITIALIZER_LIKE_SEXPR = {
-    "java": [
-        "(static_initializer) @initializer",
-        "(instance_initializer) @initializer",
-    ],
-    "kotlin": [
-        # Kotlin "init { ... }" blocks
-        "(init_declaration) @initializer",  # common in fwcd grammar
-        "(initializer) @initializer",  # alt name seen in some revs
-    ],
-    "dart": [
-        # Dart has no standalone init block nodes; constructors cover init.
-    ],
-    "pascal": [
-        "(initialization) @initializer",
-        "(finalization) @initializer",
-    ]
-}
-
-# ========= Enum members =========
-ENUM_MEMBER_LIKE_SEXPR = {
-    "java": [
-        "(enum_constant) @enum_member",
-    ],
-    "kotlin": [
-        # Enum entries are class members; usually appear as declarations
-        "(enum_entry) @enum_member",
-    ],
-    "dart": [
-        "(enum_constant) @enum_member",
-    ],
-    "pascal": [
-        "(declEnumValue) @enum_member",
-    ]
-}
-
-# ========= Annotation elements (Java's @interface methods) =========
-ANNOTATION_ELEMENT_LIKE_SEXPR = {
-    "java": [
-        "(annotation_type_element_declaration) @annotation_element",
-        # Some older grammars used:
-        "(annotation_method_declaration) @annotation_element",
-    ],
-    "pascal": []
-}
-
-# ========= Record components (Java) =========
-RECORD_COMPONENT_LIKE_SEXPR = {
-    "java": [
-        "(record_component) @record_component",
-        # In some revisions: components appear inside a list node
-        "(record_component_list (record_component) @record_component)",
-    ],
-    "kotlin": [],
-    "dart": [],
-    "pascal": []
-}
-
-# Centralized grammar queries
-GRAMMAR_QUERIES = {
-    "Package": PACKAGE_LIKE_SEXPR,
-    "Type": TYPE_LIKE_SEXPR,
-    "Constructor": CONSTRUCTOR_LIKE_SEXPR,
-    "Method": METHOD_LIKE_SEXPR,
-    "Field": FIELD_LIKE_SEXPR,
-    "Accessor": ACCESSOR_LIKE_SEXPR,
-    "Initializer": INITIALIZER_LIKE_SEXPR,
-    "EnumMember": ENUM_MEMBER_LIKE_SEXPR,
-    "AnnotationElement": ANNOTATION_ELEMENT_LIKE_SEXPR,
-    "RecordComponent": RECORD_COMPONENT_LIKE_SEXPR,
-}
+# Backwards-compatible aliases for helpers/tests that relied on direct dict names
+PACKAGE_LIKE_SEXPR = GRAMMAR_QUERIES.get("Package", {})
+TYPE_LIKE_SEXPR = GRAMMAR_QUERIES.get("Type", {})
+CONSTRUCTOR_LIKE_SEXPR = GRAMMAR_QUERIES.get("Constructor", {})
+METHOD_LIKE_SEXPR = GRAMMAR_QUERIES.get("Method", {})
+FIELD_LIKE_SEXPR = GRAMMAR_QUERIES.get("Field", {})
+ACCESSOR_LIKE_SEXPR = GRAMMAR_QUERIES.get("Accessor", {})
+INITIALIZER_LIKE_SEXPR = GRAMMAR_QUERIES.get("Initializer", {})
+ENUM_MEMBER_LIKE_SEXPR = GRAMMAR_QUERIES.get("EnumMember", {})
+ANNOTATION_ELEMENT_LIKE_SEXPR = GRAMMAR_QUERIES.get("AnnotationElement", {})
+RECORD_COMPONENT_LIKE_SEXPR = GRAMMAR_QUERIES.get("RecordComponent", {})
 
 
 @dataclass(frozen=True)
