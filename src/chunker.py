@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Tuple, Optional
 
-from tree_sitter import Node, Query, QueryError, QueryCursor
+from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
 
 # ---------------- Constants & Config ----------------
@@ -190,11 +190,11 @@ def _chunk_code(contents: bytes, path: str, language: str, repo: str) -> Iterabl
     root = tree.root_node
     pkg = _get_package_name(contents, root, language)
 
-    types = _query_nodes(language, root, GRAMMAR_QUERIES["Type"].get(language, []), "type")
-    methods = _query_nodes(language, root, GRAMMAR_QUERIES["Method"].get(language, []), "method")
-    ctors = _query_nodes(language, root, GRAMMAR_QUERIES["Constructor"].get(language, []), "constructor")
-    inits = _query_nodes(language, root, GRAMMAR_QUERIES["Initializer"].get(language, []), "initializer")
-    accessors = _query_nodes(language, root, GRAMMAR_QUERIES["Accessor"].get(language, []), "accessor")
+    types = _query_nodes(root,language, GRAMMAR_QUERIES["Type"].get(language, []), "type")
+    methods = _query_nodes(root,language, GRAMMAR_QUERIES["Method"].get(language, []), "method")
+    ctors = _query_nodes(root,language, GRAMMAR_QUERIES["Constructor"].get(language, []), "constructor")
+    inits = _query_nodes(root,language, GRAMMAR_QUERIES["Initializer"].get(language, []), "initializer")
+    accessors = _query_nodes(root,language, GRAMMAR_QUERIES["Accessor"].get(language, []), "accessor")
 
     chunks: List[Chunk] = []
 
@@ -205,10 +205,12 @@ def _chunk_code(contents: bytes, path: str, language: str, repo: str) -> Iterabl
             chunks.append(ch)
 
     top_level_types = [t for t in types if _is_top_level_type(t, language)]
-    fields = _query_nodes(language, root, GRAMMAR_QUERIES["Field"].get(language, []), "field")
-    enums = _query_nodes(language, root, GRAMMAR_QUERIES["EnumMember"].get(language, []), "enum_member")
-    anno_elems = _query_nodes(language, root, GRAMMAR_QUERIES["AnnotationElement"].get(language, []), "annotation_element")
-    record_comps = _query_nodes(language, root, GRAMMAR_QUERIES["RecordComponent"].get(language, []), "record_component")
+    fields = _query_nodes(root,language, GRAMMAR_QUERIES["Field"].get(language, []), "field")
+    enums = _query_nodes(root,language, GRAMMAR_QUERIES["EnumMember"].get(language, []), "enum_member")
+    anno_elems = _query_nodes(root,language, GRAMMAR_QUERIES["AnnotationElement"].get(language, []),
+                              "annotation_element")
+    record_comps = _query_nodes(root,language, GRAMMAR_QUERIES["RecordComponent"].get(language, []),
+                                "record_component")
 
     for t in sorted(top_level_types, key=lambda n: (n.start_byte, n.end_byte)):
         chunks.append(_build_class_metadata_chunk(
@@ -242,6 +244,7 @@ def _build_containers() -> tuple[set[str], set[str]]:
         that represent, respectively, type declarations and routine containers
         (methods/functions/constructors/initializers/accessors).
     """
+
     def root_types_for(category: str) -> set[str]:
         acc: set[str] = set()
         for pats in GRAMMAR_QUERIES.get(category, {}).values():
@@ -272,52 +275,39 @@ def _is_top_level_type(n: Node, language: str) -> bool:
         cur = cur.parent
     return True
 
-def _query_nodes(language: str, root: Node, sexprs: List[str], capture: str) -> List[Node]:
+
+from tree_sitter import Query, QueryError, QueryCursor
+
+
+def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
     """
     Execute `sexprs` as a Tree-sitter Query and return nodes captured as `@{capture}`.
-    - Supports multiple py-tree-sitter calling conventions:
-      * QueryCursor().exec(query, root) -> iterable of (node, cap[, pattern_idx])
-      * Query.captures(root) -> iterable of (node, cap)
-      * Test doubles that return a dict: {cap: [nodes...]}
-    - Deduplicates by (start,end,type) and sorts by source order.
     """
     if not sexprs:
         return []
+
     try:
-        lang = get_language(language)
-        q = Query(lang, "\n".join(s.strip() for s in sexprs if s.strip()))
+        lang = get_language(language)  # your existing helper that returns a tree_sitter.Language
+        qsrc = "\n".join(s.strip() for s in sexprs if s.strip())
+        query = Query(lang, qsrc)  # raises QueryError on invalid patterns
     except QueryError:
         return []
 
-    result = None
-    # Try modern cursor.exec API first
-    try:
-        cursor = QueryCursor(q)
-        result = list(cursor.exec(q, root))  # type: ignore[attr-defined]
-    except Exception:
-        # Try Query.captures(root) API
-        try:
-            result = list(q.captures(root))  # type: ignore[attr-defined]
-        except Exception:
-            # As a last resort, allow test doubles to provide a dict
-            result = {}
+    cursor = QueryCursor(query)
+    captures = cursor.captures(root)  # dict: { "cap_name": [Node, ...], ... }
+    nodes = list(captures.get(capture, []))
 
-    nodes: List[Node] = []
-    if isinstance(result, dict):
-        nodes = list(result.get(capture, []))
-    else:
-        # Normalize tuples of len 2 or 3: (node, cap[, pattern_idx])
-        for item in result:  # type: ignore[assignment]
-            if not isinstance(item, (tuple, list)) or len(item) < 2:
-                continue
-            n = item[0]
-            cap = item[1]
-            if cap == capture:
-                nodes.append(n)
-
-    nodes = _unique_by_span(nodes)
+    # (optional) ensure deterministic order & dedupe by byte range
     nodes.sort(key=lambda n: (n.start_byte, n.end_byte))
-    return nodes
+    deduped = []
+    seen = set()
+    for n in nodes:
+        key = (n.start_byte, n.end_byte)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(n)
+    return deduped
+
 
 def _unique_by_span(nodes: List[Node]) -> List[Node]:
     """Deduplicate nodes by (start_byte, end_byte, type)."""
@@ -525,7 +515,7 @@ def _get_package_name(contents: bytes, root: Node, language: str) -> str:
          trim leading/trailing dots, and drop a trailing ';'.
     """
     sexprs = GRAMMAR_QUERIES["Package"].get(language, [])
-    nodes = _query_nodes(language, root, sexprs, "package")
+    nodes = _query_nodes(root,language, sexprs, "package")
     if not nodes:
         return ""
 
@@ -533,7 +523,7 @@ def _get_package_name(contents: bytes, root: Node, language: str) -> str:
     if raw.endswith(";"):
         raw = raw[:-1].rstrip()
 
-    m = re.match(r"^(?:package|library|program)\s+([A-Za-z_][\w.]*)(?:\s*)$", raw)
+    m = re.match(r"^(?:package|library|program)\s+([A-Za-z_][\w.]*)\s*$", raw)
     name = m.group(1) if m else raw
 
     name = re.sub(r"[^A-Za-z0-9_.]+", ".", name)

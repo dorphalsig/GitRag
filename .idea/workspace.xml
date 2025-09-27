@@ -4,19 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a62b91fa-4941-4c7f-9eb9-399d224377bf" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/gitVectorizer.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/readme.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/Extractor.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/chunker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/fixtures/Kotlin.kt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/tests/test_chunker_helpers.py" afterDir="false" />
+    <list default="true" id="a62b91fa-4941-4c7f-9eb9-399d224377bf" name="Changes" comment="chunker + tests&#10;extractor">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Extractor.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Extractor.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/chunker.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/chunker.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -118,11 +109,35 @@
       <workItem from="1758561105403" duration="14514000" />
       <workItem from="1758653058850" duration="66000" />
       <workItem from="1758658165291" duration="22788000" />
-      <workItem from="1758917912407" duration="313000" />
+      <workItem from="1758917912407" duration="13329000" />
     </task>
+    <task id="LOCAL-00001" summary="chunker + tests&#10;extractor">
+      <option name="closed" value="true" />
+      <created>1758918640944</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1758918640944</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="chunker + tests&#10;extractor" />
+    <option name="LAST_COMMIT_MESSAGE" value="chunker + tests&#10;extractor" />
   </component>
 </project>

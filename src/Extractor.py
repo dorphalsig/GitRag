@@ -1,390 +1,332 @@
-from __future__ import annotations
-
+# sync_chunks.py
+import argparse
 import json
 import os
-import hashlib
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+import sys
+from typing import Any, Dict, Iterable, List, Tuple
 
-# Import chunker (support both package and module usage)
-try:
-    from .chunker import chunk_file, Chunk  # type: ignore
-except Exception:  # pragma: no cover
-    from src.chunker import chunk_file, Chunk  # type: ignore
+from cloudflare import Cloudflare
+from sentence_transformers import SentenceTransformer
+
+# Your chunker must expose chunk_file(); Chunk dataclass shown in the prompt.
+import chunker  # expects chunker.chunk_file(path) -> List[Chunk]
+
+# ------------------------- Embeddings -----------------------------------------------------------
+
+_model = None  # lazy global
 
 
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Return environment variable or default.
-    Keep this tiny helper to avoid sprinkling os.environ in many places.
+def get_embedder() -> SentenceTransformer:
+    """Lazy-load CodeRankEmbed (kept locally or via HF cache).
+
+    Uses CODERANK_MODEL_DIR if set, otherwise loads "nomic-ai/CodeRankEmbed".
+    Raises RuntimeError on failure (fail-fast per requirements).
     """
-    return os.environ.get(name, default)
-
-
-
-
-class CodeRankEmbedder:
-    """Lazy loader for a local CodeRankEmbed model.
-
-    The actual import happens on first use to minimize startup overhead for
-    GitHub runners that only need deletion handling.
-    """
-
-    def __init__(self) -> None:
-        self._model = None  # lazy
-
-    def _ensure_model(self):
-        """Load the embedding model only when needed."""
-        if self._model is not None:
-            return
-        # Attempt to import a locally installed CodeRankEmbed model.
-        # Adjust these imports to your specific local install if different.
-        try:  # pragma: no cover - exercised only in runtime env with model installed
-            import coderank_embed as cre  # hypothetical package name
-            self._model = cre.load_default()  # type: ignore[attr-defined]
-            return
-        except Exception:
-            pass
-        try:  # Fallback to sentence-transformers if available
-            from sentence_transformers import SentenceTransformer  # type: ignore
-            self._model = SentenceTransformer("all-MiniLM-L6-v2")
-            return
-        except Exception as e:  # pragma: no cover
-            raise RuntimeError(
-                "No embedding model found. Install CodeRankEmbed or sentence-transformers."
-            ) from e
-
-    def embed_texts(self, texts: Sequence[str]) -> List[List[float]]:
-        """Embed a list of texts into vectors.
-
-        Args:
-            texts: Iterable of text chunks to embed.
-        Returns:
-            List of embedding vectors (list of floats) aligned with input order.
-        """
-        self._ensure_model()
-        # Simple adapter for the two supported backends
-        if hasattr(self._model, "encode"):
-            vecs = self._model.encode(list(texts))  # type: ignore[attr-defined]
-        else:  # pragma: no cover - depends on a custom CodeRankEmbed API
-            vecs = self._model.embed(list(texts))  # type: ignore[attr-defined]
-        return [list(map(float, v)) for v in vecs]
-
-
-class CloudflareVectorizeClient:
-    """Client for Cloudflare Vectorize using the official Python SDK.
-
-    Expects env vars: CF_ACCOUNT_ID, CF_API_TOKEN, CF_VECTORIZE_INDEX.
-    All network calls go through the SDK (no raw urllib). Errors are wrapped
-    into RuntimeError with concise messages.
-    """
-
-    def __init__(self,
-                 account_id: Optional[str] = None,
-                 api_token: Optional[str] = None,
-                 index_name: Optional[str] = None) -> None:
-        self.account_id = account_id or _env("CF_ACCOUNT_ID")
-        self.api_token = api_token or _env("CF_API_TOKEN")
-        self.index_name = index_name or _env("CF_VECTORIZE_INDEX")
-        if not (self.account_id and self.api_token and self.index_name):  # pragma: no cover
-            raise RuntimeError("Cloudflare Vectorize env vars missing: CF_ACCOUNT_ID, CF_API_TOKEN, CF_VECTORIZE_INDEX")
-
-    def _sdk_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """POST to a Cloudflare v4 path using the Python SDK.
-
-        Tries the modern 'cloudflare' SDK first, then the legacy 'CloudFlare' SDK.
-        Raises RuntimeError with a clear message on any error.
-        """
-        try:
-            try:
-                # New typed SDK
-                from cloudflare import Cloudflare  # type: ignore
-                cf = Cloudflare(api_token=self.api_token)
-                client = getattr(cf, "_client", None) or getattr(cf, "client", None)
-                if client and hasattr(client, "request"):
-                    resp = client.request("POST", "/client/v4" + path, json=payload)
-                    try:
-                        return resp.json()
-                    except Exception:
-                        return {}
-            except Exception:
-                # Legacy SDK
-                import CloudFlare  # type: ignore
-                cf = CloudFlare.CloudFlare(token=self.api_token)
-                if hasattr(cf, "api_call"):
-                    return cf.api_call("POST", "/client/v4" + path, data=payload)
-                if hasattr(cf, "raw"):
-                    return cf.raw("POST", "/client/v4" + path, data=payload)
-            raise RuntimeError("Cloudflare SDK found but request interface missing; please upgrade the 'cloudflare' package.")
-        except Exception as e:
-            raise RuntimeError(f"Cloudflare Vectorize API call failed ({path}): {e}") from e
-
-    def upsert(self, items: List[Dict[str, Any]]) -> None:
-        """Upsert vectors with metadata.
-
-        Args:
-            items: List of {"id": str, "values": List[float], "metadata": Dict[str,Any]}.
-        """
-        if not items:
-            return
-        payload = {"vectors": items}
-        path = f"/accounts/{self.account_id}/vectorize/indexes/{self.index_name}/upsert"
-        try:
-            self._sdk_post(path, payload)
-        except Exception as e:
-            raise RuntimeError(f"Failed to upsert vectors to Cloudflare Vectorize: {e}") from e
-
-    def delete(self, ids: List[str]) -> None:
-        """Delete vectors by IDs. No-op if list is empty."""
-        if not ids:
-            return
-        path = f"/accounts/{self.account_id}/vectorize/indexes/{self.index_name}/delete"
-        try:
-            self._sdk_post(path, {"ids": ids})
-        except Exception as e:
-            raise RuntimeError(f"Failed to delete vectors from Cloudflare Vectorize: {e}") from e
-
-    def find_ids_by_filter(self, flt: Dict[str, Any]) -> List[str]:
-        """Best-effort attempt to fetch IDs by metadata filter.
-
-        If the SDK or endpoint doesn't support metadata-only search, returns [].
-        Never raises; logs via return semantics to stay resilient.
-        """
-        try:
-            path = f"/accounts/{self.account_id}/vectorize/indexes/{self.index_name}/metadata/search"
-            data = self._sdk_post(path, {"filter": flt})
-            vecs = (data.get("result") or {}).get("vectors") or []
-            return [v.get("id") for v in vecs if isinstance(v, dict) and v.get("id")]
-        except Exception:
-            return []
-
-
-class CloudflareD1Client:
-    """Client for Cloudflare D1 using the Python SDK.
-
-    Expects env vars: CF_ACCOUNT_ID, CF_API_TOKEN, CF_D1_DB. Uses parameterized SQL.
-    All network calls go through the SDK; errors are wrapped with clear messages.
-    """
-
-    def __init__(self,
-                 account_id: Optional[str] = None,
-                 api_token: Optional[str] = None,
-                 database_id: Optional[str] = None) -> None:
-        self.account_id = account_id or _env("CF_ACCOUNT_ID")
-        self.api_token = api_token or _env("CF_API_TOKEN")
-        self.database_id = database_id or _env("CF_D1_DB")
-        if not (self.account_id and self.api_token and self.database_id):  # pragma: no cover
-            raise RuntimeError("Cloudflare D1 env vars missing: CF_ACCOUNT_ID, CF_API_TOKEN, CF_D1_DB")
-        self._ensure_schema_done = False
-
-    def _sdk_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """POST to a Cloudflare v4 path using the Python SDK.
-
-        Tries the modern 'cloudflare' SDK first, then the legacy 'CloudFlare' SDK.
-        Returns parsed JSON-like dict when possible; raises RuntimeError otherwise.
-        """
-        try:
-            try:
-                from cloudflare import Cloudflare  # type: ignore
-                cf = Cloudflare(api_token=self.api_token)
-                client = getattr(cf, "_client", None) or getattr(cf, "client", None)
-                if client and hasattr(client, "request"):
-                    resp = client.request("POST", "/client/v4" + path, json=payload)
-                    try:
-                        return resp.json()
-                    except Exception:
-                        return {}
-            except Exception:
-                import CloudFlare  # type: ignore
-                cf = CloudFlare.CloudFlare(token=self.api_token)
-                if hasattr(cf, "api_call"):
-                    return cf.api_call("POST", "/client/v4" + path, data=payload)
-                if hasattr(cf, "raw"):
-                    return cf.raw("POST", "/client/v4" + path, data=payload)
-            raise RuntimeError("Cloudflare SDK found but request interface missing; please upgrade the 'cloudflare' package.")
-        except Exception as e:
-            raise RuntimeError(f"Cloudflare D1 API call failed ({path}): {e}") from e
-
-    def _execute(self, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
-        path = f"/accounts/{self.account_id}/d1/database/{self.database_id}/query"
-        body: Dict[str, Any] = {"sql": sql}
-        if params:
-            body["params"] = params
-        data = self._sdk_post(path, body)
-        # D1 returns envelope with 'result'; normalize
-        return data.get("result", data)
-
-    def ensure_schema(self) -> None:
-        """Create the chunks table if it doesn't exist."""
-        if self._ensure_schema_done:
-            return
-        sql = (
-            "CREATE TABLE IF NOT EXISTS chunks ("
-            "id TEXT PRIMARY KEY,"
-            "repo TEXT,"
-            "path TEXT,"
-            "language TEXT,"
-            "start_rc_row INTEGER,"
-            "start_rc_col INTEGER,"
-            "end_rc_row INTEGER,"
-            "end_rc_col INTEGER,"
-            "start_bytes INTEGER,"
-            "end_bytes INTEGER,"
-            "signature TEXT,"
-            "chunk TEXT"
-            ")"
-        )
-        self._execute(sql)
-        # Simple index for fast path deletes
-        self._execute("CREATE INDEX IF NOT EXISTS idx_chunks_repo_path ON chunks(repo, path)")
-        self._ensure_schema_done = True
-
-    def upsert_chunks(self, rows: List[Tuple[str, Chunk]]) -> None:
-        """Upsert chunk rows into D1.
-
-        Each row is (id, chunk). We split composite fields and store full text.
-        """
-        if not rows:
-            return
-        self.ensure_schema()
-        sql = (
-            "INSERT OR REPLACE INTO chunks (id, repo, path, language, start_rc_row, start_rc_col, "
-            "end_rc_row, end_rc_col, start_bytes, end_bytes, signature, chunk) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        for cid, ch in rows:
-            sr, sc = ch.start_rc
-            er, ec = ch.end_rc
-            params = [
-                cid, ch.repo, ch.path, ch.language, sr, sc, er, ec, ch.start_bytes, ch.end_bytes, ch.signature, ch.chunk
-            ]
-            self._execute(sql, params)
-
-    def get_ids_by_path(self, repo: str, path: str) -> List[str]:
-        """Return all chunk IDs for a repo+path from D1."""
-        self.ensure_schema()
-        sql = "SELECT id FROM chunks WHERE repo = ? AND path = ?"
-        data = self._execute(sql, [repo, path])
-        rows = data.get("results") or data.get("rows") or []
-        # D1 returns different shapes; normalize
-        ids: List[str] = []
-        for row in rows:
-            if isinstance(row, dict) and "id" in row:
-                ids.append(row["id"])  # pragma: no cover
-            elif isinstance(row, list) and row:
-                ids.append(str(row[0]))
-        return ids
-
-    def delete_by_path(self, repo: str, path: str) -> None:
-        """Delete all chunks for repo+path from D1."""
-        self.ensure_schema()
-        self._execute("DELETE FROM chunks WHERE repo = ? AND path = ?", [repo, path])
-
-
-def _chunk_id(ch: Chunk) -> str:
-    """Deterministic ID for a chunk using chunker.Chunk.id()."""
+    global _model
+    if _model is not None:
+        return _model
+    src = os.environ.get("CODERANK_MODEL_DIR", "nomic-ai/CodeRankEmbed")
     try:
-        return ch.id()
-    except Exception:
-        raw = f"{ch.repo}::{ch.path}::{ch.start_bytes}::{ch.end_bytes}"
-        return hashlib.sha256(raw.encode()).hexdigest()
+        _model = SentenceTransformer(src, trust_remote_code=True, device="cpu")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load CodeRankEmbed from '{src}': {e}") from e
+    return _model
 
 
-def _to_vectorize_item(ch: Chunk, vec: List[float], cid: str) -> Dict[str, Any]:
-    """Map a chunk and its vector into a Vectorize payload item."""
-    sr, sc = ch.start_rc
-    er, ec = ch.end_rc
-    meta = {
-        "repo": ch.repo,
-        "path": ch.path,
-        "language": ch.language,
-        "start_rc_row": sr,
-        "start_rc_col": sc,
-        "end_rc_row": er,
-        "end_rc_col": ec,
-        "start_bytes": ch.start_bytes,
-        "end_bytes": ch.end_bytes,
-        "signature": ch.signature,
-    }
-    return {"id": cid, "values": vec, "metadata": meta}
+def embed_texts(texts: List[str]) -> List[List[float]]:
+    """Encode a batch of code chunks with CodeRankEmbed."""
+    if not isinstance(texts, list):
+        raise TypeError("texts must be a list[str]")
+    if not texts:
+        return []
+    model = get_embedder()
+    vecs = model.encode(texts, batch_size=32)
+    return vecs.tolist()
 
 
-class ExtractorRunner:
-    """Orchestrates chunking, embedding, and Cloudflare upserts/deletes."""
+# ------------------------- Cloudflare clients & config -----------------------------------------
 
-    def __init__(self, repo: str,
-                 embedder: Optional[CodeRankEmbedder] = None,
-                 vec_client: Optional[CloudflareVectorizeClient] = None,
-                 d1_client: Optional[CloudflareD1Client] = None) -> None:
-        self.repo = repo
-        self.embedder = embedder or CodeRankEmbedder()
-        self.vectorize = vec_client or CloudflareVectorizeClient()
-        self.d1 = d1_client or CloudflareD1Client()
-
-    def process_file(self, path: str) -> None:
-        """Process a single file: chunk -> embed -> upsert to Vectorize and D1."""
-        chunks = chunk_file(path, self.repo)
-        if not chunks:
-            return
-        texts = [c.chunk for c in chunks]
-        vecs = self.embedder.embed_texts(texts)
-        rows = []
-        items: List[Dict[str, Any]] = []
-        for ch, v in zip(chunks, vecs):
-            cid = _chunk_id(ch)
-            items.append(_to_vectorize_item(ch, v, cid))
-            rows.append((cid, ch))
-        self.vectorize.upsert(items)
-        self.d1.upsert_chunks(rows)
-
-    def delete_file(self, path: str) -> None:
-        """Delete stored vectors and chunks for a file from both backends."""
-        flt = {"repo": self.repo, "path": path}
-        ids = self.vectorize.find_ids_by_filter(flt)
-        if not ids:
-            ids = self.d1.get_ids_by_path(self.repo, path)
-        self.vectorize.delete(ids)
-        self.d1.delete_by_path(self.repo, path)
-
-    def run(self, changes: Sequence[Dict[str, Any]]) -> None:
-        """Run the extractor for a list of changes.
-
-        Each change must have keys: {"file": str, "action": "process"|"delete"}.
-        Errors for individual files are caught and reported; processing continues.
-        """
-        for change in changes:
-            path = change.get("file") or change.get("path")
-            action = (change.get("action") or "").lower()
-            if not path or action not in {"process", "delete"}:
-                continue
-            try:
-                if action == "process":
-                    self.process_file(path)
-                else:
-                    self.delete_file(path)
-            except Exception as e:
-                print(f"ExtractorRunner error for {action} '{path}': {e}")
+def cf_client() -> Cloudflare:
+    """Construct Cloudflare SDK client from env token."""
+    token = os.environ.get("CLOUDFLARE_API_TOKEN")
+    if not token:
+        raise SystemExit("CLOUDFLARE_API_TOKEN is not set")
+    return Cloudflare(api_token=token)
 
 
-def run(changes: Union[str, Sequence[Dict[str, Any]]], repo: Optional[str] = None) -> None:
-    """Convenience entry point for GitHub runners.
+def cf_ids() -> Tuple[str, str, str]:
+    """Read required Cloudflare identifiers from env (validate presence)."""
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    index_name = os.environ.get("VECTORIZE_INDEX_NAME")
+    d1_db_id = os.environ.get("D1_DATABASE_ID")
+    missing = [k for k, v in {
+        "CLOUDFLARE_ACCOUNT_ID": account_id,
+        "VECTORIZE_INDEX_NAME": index_name,
+        "D1_DATABASE_ID": d1_db_id,
+    }.items() if not v]
+    if missing:
+        raise SystemExit(f"Missing required env vars: {', '.join(missing)}")
+    return account_id, index_name, d1_db_id
 
-    Args:
-        changes: Either a JSON string of change objects or a parsed list.
-        repo: Repository identifier (e.g., "owner/repo"). If None, uses GITHUB_REPOSITORY.
+
+def ensure_tables(client: Cloudflare, account_id: str, d1_db_id: str) -> None:
+    """Idempotently ensure the D1 table exists for chunks and a path index."""
+    sql = """
+          CREATE TABLE IF NOT EXISTS chunks
+          (
+              id
+              TEXT
+              PRIMARY
+              KEY,
+              repo
+              TEXT
+              NOT
+              NULL,
+              path
+              TEXT
+              NOT
+              NULL,
+              language
+              TEXT
+              NOT
+              NULL,
+              start_row
+              INTEGER
+              NOT
+              NULL,
+              start_col
+              INTEGER
+              NOT
+              NULL,
+              end_row
+              INTEGER
+              NOT
+              NULL,
+              end_col
+              INTEGER
+              NOT
+              NULL,
+              start_bytes
+              INTEGER
+              NOT
+              NULL,
+              end_bytes
+              INTEGER
+              NOT
+              NULL,
+              signature
+              TEXT,
+              chunk
+              TEXT
+              NOT
+              NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path); \
+          """
+    client.d1.database.query(account_id=account_id, database_id=d1_db_id, sql=sql)
+
+
+# ------------------------- Shaping data ---------------------------------------------------------
+
+
+def make_vector_records(chunks: List[Any], embeddings: List[List[float]]) -> List[Dict[str, Any]]:
+    """Build Vectorize upsert records (exclude raw text; include rich metadata)."""
+    records: List[Dict[str, Any]] = []
+    for chunk, embedding in zip(chunks, embeddings):
+        start_row, start_col = getattr(chunk, "start_rc", (0, 0))
+        end_row, end_col = getattr(chunk, "end_rc", (0, 0))
+        records.append({
+            # Use authoritative stable ID from Chunk
+            "id": chunk.id(),
+            "values": embedding,
+            "metadata": {
+                "repo": getattr(chunk, "repo", ""),
+                "path": getattr(chunk, "path", ""),
+                "language": getattr(chunk, "language", ""),
+                "start_row": start_row, "start_col": start_col,
+                "end_row": end_row, "end_col": end_col,
+                "start_bytes": getattr(chunk, "start_bytes", 0),
+                "end_bytes": getattr(chunk, "end_bytes", 0),
+                "signature": getattr(chunk, "signature", ""),
+            },
+        })
+
+
+def ndjson_bytes(objs: Iterable[Dict[str, Any]]) -> bytes:
+    """Serialize objects into NDJSON bytes suited for Vectorize insert/upsert."""
+    lines: List[str] = []
+    for o in objs:
+        lines.append(json.dumps(o, separators=(",", ":"), ensure_ascii=False))
+    lines.append("")  # newline at end
+    return "\n".join(lines).encode("utf-8")
+
+
+# ------------------------- D1 operations --------------------------------------------------------
+def d1_upsert_chunk(client: Cloudflare, account_id: str, d1_database_id: str, chunk: Any) -> None:
+    """Insert or replace one chunk row in Cloudflare D1.
+
+    Uses the authoritative stable ID from `chunk.id()` and persists the raw text
+    in the `chunk` column. Maps `start_rc`/`end_rc` tuples to the corresponding
+    row/col columns. Raises any errors from the Cloudflare SDK unchanged.
     """
-    if isinstance(changes, str):
-        changes_list = json.loads(changes or "[]")
-    else:
-        changes_list = list(changes)
-    repo_name = repo or _env("REPO") or _env("GITHUB_REPOSITORY") or ""
-    ExtractorRunner(repo_name).run(changes_list)
+    start_row, start_col = chunk.start_rc
+    end_row, end_col = chunk.end_rc
+
+    sql = """
+    INSERT OR REPLACE INTO chunks(
+      id, repo, path, language, start_row, start_col, end_row, end_col,
+      start_bytes, end_bytes, signature, chunk
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """
+    params = [chunk.id(), chunk.repo, chunk.path, chunk.language, start_row, start_col, end_row, end_col,
+              chunk.start_bytes, chunk.end_bytes, chunk.signature, chunk.chunk, ]
+    client.d1.database.query(
+        account_id=account_id,
+        database_id=d1_database_id,
+        sql=sql,
+        params=params,
+    )
 
 
-if __name__ == "__main__":  # pragma: no cover
-    import sys
-    input_json = None
-    if len(sys.argv) > 1:
-        input_json = sys.argv[1]
-    else:
-        input_json = _env("CHANGES_JSON", "[]")
-    repo_arg = sys.argv[2] if len(sys.argv) > 2 else None
-    run(input_json, repo_arg)
+def d1_ids_for_path(client: Cloudflare, account_id: str, d1_db_id: str, path: str) -> List[str]:
+    """Return vector IDs for a given file path from D1.
+
+    This avoids O(N) scans in Vectorize during deletes and relies on the
+    authoritative chunks table (indexed by path).
+    """
+    sql = "SELECT id FROM chunks WHERE path = ?;"
+    page = client.d1.database.query(
+        account_id=account_id,
+        database_id=d1_db_id,
+        sql=sql,
+        params=[path],
+    )
+    rows = (getattr(page, "result", None) or [{}])[0].get("results", [])
+    return [r["id"] for r in rows]
+
+
+def d1_delete_ids(client: Cloudflare, account_id: str, d1_db_id: str, ids: List[str], batch: int = 100) -> None:
+    """Delete rows from D1 by ID in batches (safe for SQLite param limits)."""
+    if not ids:
+        return
+    for i in range(0, len(ids), batch):
+        subset = ids[i:i + batch]
+        placeholders = ",".join("?" for _ in subset)
+        sql = f"DELETE FROM chunks WHERE id IN ({placeholders});"
+        client.d1.database.query(account_id=account_id, database_id=d1_db_id, sql=sql, params=subset)
+
+
+# ------------------------- Vectorize operations -------------------------------------------------
+
+def vz_upsert_records(client: Cloudflare, account_id: str, index_name: str, records: List[Dict[str, Any]]) -> None:
+    """Upsert vectors (id + values + metadata) via official Python SDK (NDJSON body)."""
+    if not records:
+        return
+    body = ndjson_bytes(records)
+    client.vectorize.indexes.upsert(index_name=index_name, account_id=account_id, body=body)
+
+
+def vz_delete_ids(client: Cloudflare, account_id: str, index_name: str, ids: List[str], batch: int = 1024) -> None:
+    """Delete vectors by IDs from Vectorize (batches for large deletions)."""
+    if not ids:
+        return
+    for i in range(0, len(ids), batch):
+        client.vectorize.indexes.delete_by_ids(
+            index_name=index_name, account_id=account_id, ids=ids[i:i + batch]
+        )
+
+
+def vz_ids_for_path(client: Cloudflare, account_id: str, index_name: str, path: str,
+                    page_size: int = 1000, hydrate_batch: int = 500) -> List[str]:
+    """Return **all** vector IDs whose metadata.path equals `path`.
+
+    Strategy (robust to `top_k` limits): page `list_vectors()` to get IDs, then
+    fetch metadata for those IDs via `get_by_ids()` in batches and filter client-side.
+    """
+    matched: List[str] = []
+    cursor = None
+    while True:
+        page = client.vectorize.indexes.list_vectors(
+            index_name=index_name, account_id=account_id, count=page_size, cursor=cursor
+        )
+        vec_items = getattr(page, "vectors", []) or []
+        ids = [v.get("id") if isinstance(v, dict) else getattr(v, "id", None) for v in vec_items]
+        ids = [i for i in ids if i]
+        for i in range(0, len(ids), hydrate_batch):
+            resp = client.vectorize.indexes.get_by_ids(
+                index_name=index_name, account_id=account_id, ids=ids[i:i + hydrate_batch]
+            )
+            # SDK returns an object with .result (list) OR attributes; handle both.
+            result = getattr(resp, "result", resp) or []
+            for item in result:
+                meta = (item.get("metadata") if isinstance(item, dict)
+                        else getattr(item, "metadata", {}))
+                if isinstance(meta, dict) and meta.get("path") == path:
+                    matched.append(item["id"] if isinstance(item, dict) else getattr(item, "id"))
+        cursor = getattr(page, "next_cursor", None) or getattr(page, "nextCursor", None)
+        more = bool(cursor) or getattr(page, "is_truncated", False) or getattr(page, "isTruncated", False)
+        if not more:
+            break
+    return matched
+
+
+# ------------------------- File flows -----------------------------------------------------------
+
+def process_file(path: str, client: Cloudflare, account_id: str, index_name: str, d1_db_id: str) -> None:
+    """Chunk → embed → upsert to Vectorize (metadata) → upsert to D1 (with text)."""
+    chunks = chunker.chunk_file(path)
+    if not chunks:
+        return
+    vectors = embed_texts([getattr(c, "chunk", "") for c in chunks])
+    records = make_vector_records(chunks, vectors)
+    vz_upsert_records(client, account_id, index_name, records)
+    for c, rec in zip(chunks, records):
+        d1_upsert_chunk(client, account_id, d1_db_id, c, rec["id"])
+
+
+def delete_file(path: str, client: Cloudflare, account_id: str, index_name: str, d1_db_id: str) -> None:
+    """Find IDs in Vectorize where metadata.path == `path` → delete in Vectorize → delete same IDs in D1."""
+    ids = vz_ids_for_path(client, account_id, index_name, path)
+    if not ids:
+        return
+    vz_delete_ids(client, account_id, index_name, ids)
+    d1_delete_ids(client, account_id, d1_db_id, ids)
+
+
+# ------------------------- CLI ------------------------------------------------------------------
+
+def parse_changes_arg(arg: str) -> List[Dict[str, str]]:
+    """Support inline JSON or @file.json for the --changes argument."""
+    if not arg:
+        raise SystemExit("--changes is required")
+    if arg.startswith("@"):
+        with open(arg[1:], "r", encoding="utf-8") as f:
+            return json.load(f)
+    return json.loads(arg)
+
+
+def main() -> None:
+    """Drive sync from a JSON list of {file, action}, validating env + schema."""
+    parser = argparse.ArgumentParser(description="Sync code chunks to Cloudflare Vectorize (embeddings) + D1 (text).")
+    parser.add_argument("--changes", required=True, help="JSON list of {file, action} or @/path/to/file.json")
+    args = parser.parse_args()
+
+    client = cf_client()
+    account_id, index_name, d1_db_id = cf_ids()
+    ensure_tables(client, account_id, d1_db_id)
+
+    changes = parse_changes_arg(args.changes)
+    for item in changes:
+        path = item.get("file")
+        action = (item.get("action") or "").lower()
+        if not path or action not in {"process", "delete"}:
+            print(f"Skipping invalid change item: {item}", file=sys.stderr)
+            continue
+        if action == "process":
+            process_file(path, client, account_id, index_name, d1_db_id)
+        else:
+            delete_file(path, client, account_id, index_name, d1_db_id)
+
+
+if __name__ == "__main__":
+    main()
