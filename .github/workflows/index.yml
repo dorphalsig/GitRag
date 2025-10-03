@@ -1,0 +1,52 @@
+name: Index Repo
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repo to pass to Feed.py (defaults to this repository)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: index-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run-feed:
+    runs-on: ubuntu-latest
+    env:
+      # If your Feed.py needs secrets, surface them here (examples—rename to your real names):
+      # CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      # CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      # D1_DATABASE: ${{ secrets.D1_DATABASE }}
+      # VECTORIZE_INDEX: ${{ secrets.VECTORIZE_INDEX }}
+      TARGET_REPO: ${{ inputs.repo || github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore HF model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.hf_cache
+            ~/.cache/huggingface
+          key: ${{ runner.os }}-coderank-models-${{ hashFiles('**/requirements.txt') }}-v1
+          restore-keys: |
+            ${{ runner.os }}-coderank-models-
+
+      - name: Configure HF cache dirs
+        run: |
+          echo "HF_HOME=${GITHUB_WORKSPACE}/.hf_cache" >> "$GITHUB_ENV"
+          echo "HF_HUB_CACHE=${GITHUB_WORKSPACE}/.hf_cache/hub" >> "$GITHUB_ENV"
+          echo "TRANSFORMERS_CACHE=${GITHUB_WORKSPACE}/.hf_cache/hub" >> "$GITHUB_ENV"
+
+      - name: Run Feed.py
+        run: python Feed.py --repo="${{ github.repository }}"
+

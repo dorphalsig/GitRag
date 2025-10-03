@@ -60,7 +60,7 @@ def ensure_fixtures() -> None:
     # Create random files for each missing non-code grammar extension
     try:
         # Local import to avoid overhead outside tests; safe due to helper stubs in unit tests
-        from src import chunker as _chunker  # type: ignore
+        from src import Chunker as _chunker  # type: ignore
         noncode_exts = set(_chunker.NONCODE_TS_GRAMMAR.keys())
     except Exception:
         # Fallback to a hardcoded superset matching the current chunker.NONCODE_TS_GRAMMAR keys

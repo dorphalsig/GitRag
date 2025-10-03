@@ -51,20 +51,20 @@ def _import_chunker():
     """
     Try, in order:
     1) Regular `import chunker`
-    2) Dynamically load the first src/**/chunker.py found
+    2) Dynamically load the first src/**/Chunker.py found
     """
     try:
         import chunker as m  # type: ignore
         return m
     except ImportError as exc:
-        for p in SRC.rglob("chunker.py"):
+        for p in SRC.rglob("Chunker.py"):
             spec = spec_from_file_location("chunker", p)
             if spec and spec.loader:
                 mod = module_from_spec(spec)
                 sys.modules["chunker"] = mod
                 spec.loader.exec_module(mod)  # type: ignore[attr-defined]
                 return mod
-        raise ImportError(f"Could not locate chunker.py under {SRC}") from exc
+        raise ImportError(f"Could not locate Chunker.py under {SRC}") from exc
 
 chunker = _import_chunker()
 

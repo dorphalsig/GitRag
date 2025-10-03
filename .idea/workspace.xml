@@ -4,10 +4,19 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a62b91fa-4941-4c7f-9eb9-399d224377bf" name="Changes" comment="chunker + tests&#10;extractor">
+    <list default="true" id="a62b91fa-4941-4c7f-9eb9-399d224377bf" name="Changes" comment="refactored chunker &amp; extractor">
+      <change afterPath="$PROJECT_DIR$/.github/workflows/index.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Calculators/CodeRankCalculator.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Calculators/EmbeddingCalculator.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Calculators/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Chunk.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Indexer.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/Persist.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/Extractor.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/Extractor.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/chunker.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/chunker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/Extractor.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/fixtures.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/fixtures.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_chunker_helpers.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_chunker_helpers.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -50,6 +59,7 @@
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
     &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
     &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
     &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
     &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
@@ -60,6 +70,7 @@
       <recent name="C:\Users\Paavum\Projects\gitVectorizer" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\Paavum\Projects\gitVectorizer\src\Calculators" />
       <recent name="C:\Users\Paavum\Projects\gitVectorizer\src" />
       <recent name="C:\Users\Paavum\Projects\gitVectorizer\src\repoEmbedder" />
     </key>
@@ -74,8 +85,9 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
+      <option name="SDK_NAME" value="Python 3.12" />
       <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="true" />
+      <option name="IS_MODULE_SDK" value="false" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
@@ -109,7 +121,7 @@
       <workItem from="1758561105403" duration="14514000" />
       <workItem from="1758653058850" duration="66000" />
       <workItem from="1758658165291" duration="22788000" />
-      <workItem from="1758917912407" duration="13329000" />
+      <workItem from="1758917912407" duration="65399000" />
     </task>
     <task id="LOCAL-00001" summary="chunker + tests&#10;extractor">
       <option name="closed" value="true" />
@@ -119,7 +131,15 @@
       <option name="project" value="LOCAL" />
       <updated>1758918640944</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="refactored chunker &amp; extractor">
+      <option name="closed" value="true" />
+      <created>1758992916212</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1758992916212</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -138,6 +158,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="chunker + tests&#10;extractor" />
-    <option name="LAST_COMMIT_MESSAGE" value="chunker + tests&#10;extractor" />
+    <MESSAGE value="refactored chunker &amp; extractor" />
+    <option name="LAST_COMMIT_MESSAGE" value="refactored chunker &amp; extractor" />
   </component>
 </project>
