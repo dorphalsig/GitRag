@@ -1,4 +1,4 @@
-# GitRag — Cloudflare D1 FTS5 & Vectorize Strategy (Feeding Only)
+# GitRag — A RAG Indexer for GIT Repositories
 
 Scope
 - Hybrid RAG feeding pipeline: maintain a keyword/BM25 search corpus in Cloudflare D1 (SQLite/FTS5) and a semantic vector index in Cloudflare Vectorize.
