@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 
-from EmbeddingCalculator import EmbeddingCalculator
+from .EmbeddingCalculator import EmbeddingCalculator
 
 try:
     # SentenceTransformers is the supported way per model card

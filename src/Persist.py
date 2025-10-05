@@ -1,61 +1,64 @@
 import io
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, List, Any, Dict
 
 import numpy as np
 from cloudflare import Cloudflare
-import requests
 
 from Chunk import Chunk
-from persistence_registry import (
-    register_persistence_adapter,
-    get_persistence_adapter,
-)
+from persistence_registry import register_persistence_adapter, get_persistence_adapter
 
 logger = logging.getLogger(__name__)
 
 
-def _extract_result(data: Dict[str, Any], key: Optional[str] = None) -> Any:
-    if not isinstance(data, dict):
+def _to_dict(obj: Any) -> Optional[Dict[str, Any]]:
+    if obj is None:
         return None
-    result = data.get("result")
-    if key is None:
-        if isinstance(result, dict):
-            return result
-        return data
-    if isinstance(result, dict) and key in result:
-        return result[key]
-    return data.get(key)
-
-
-def extract_mutation_id(data: Dict[str, Any]) -> Optional[str]:
-    candidate = _extract_result(data)
-    if isinstance(candidate, dict):
-        value = candidate.get("mutation_id") or candidate.get("mutationId")
-        if isinstance(value, str):
-            return value
-    if isinstance(data, dict):
-        value = data.get("mutation_id") or data.get("mutationId")
-        if isinstance(value, str):
-            return value
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+    if hasattr(obj, "to_dict"):
+        try:
+            return obj.to_dict()
+        except Exception:
+            pass
+    if hasattr(obj, "__dict__"):
+        return dict(obj.__dict__)
     return None
 
 
-def extract_processed_mutation(data: Dict[str, Any]) -> Optional[str]:
-    candidate = _extract_result(data)
-    if isinstance(candidate, dict):
-        value = candidate.get("processed_up_to_mutation") or candidate.get("processedUpToMutation")
-        if isinstance(value, str):
-            return value
-    if isinstance(data, dict):
-        value = data.get("processed_up_to_mutation") or data.get("processedUpToMutation")
-        if isinstance(value, str):
-            return value
+def _resolve_attr(obj: Any, *names: str) -> Optional[str]:
+    if obj is None:
+        return None
+    for name in names:
+        if isinstance(obj, dict) and name in obj and obj[name]:
+            return obj[name]
+        if hasattr(obj, name):
+            value = getattr(obj, name)
+            if value:
+                return value
+    data = _to_dict(obj)
+    if data:
+        for name in names:
+            value = data.get(name)
+            if value:
+                return value
     return None
+
+
+def extract_mutation_id(obj: Any) -> Optional[str]:
+    return _resolve_attr(obj, "mutation_id", "mutationId") or _resolve_attr(getattr(obj, "result", None), "mutation_id", "mutationId")
+
+
+def extract_processed_mutation(obj: Any) -> Optional[str]:
+    return _resolve_attr(obj, "processed_up_to_mutation", "processedUpToMutation") or _resolve_attr(getattr(obj, "result", None), "processed_up_to_mutation", "processedUpToMutation")
 
 
 @dataclass(frozen=True)
@@ -94,8 +97,6 @@ class PersistInVectorize(PersistenceAdapter):
         cfg: PersistConfig,
         dim: int,
         client: Cloudflare = None,
-        http_client: Optional[requests.Session] = None,
-        api_token: Optional[str] = None,
     ) -> None:
         """Create a persistence helper.
 
@@ -118,13 +119,6 @@ class PersistInVectorize(PersistenceAdapter):
         self._cfg = cfg
         self._dim = dim
         self._setup_done = False
-        self._http: Optional[requests.Session] = http_client
-        if api_token is None:
-            token = os.getenv("CLOUDFLARE_API_TOKEN")
-        else:
-            token = api_token
-        self._api_token = (token or "").strip()
-        self._base_url = "https://api.cloudflare.com/client/v4"
 
     def _ensure_setup(self) -> None:
         """Idempotent setup: create Vectorize index + metadata indexes + D1 table/indexes."""
@@ -133,45 +127,43 @@ class PersistInVectorize(PersistenceAdapter):
         account_id = self._cfg.account_id
         index_name = self._cfg.vectorize_index
 
-        index_path = f"/accounts/{account_id}/vectorize/v2/indexes/{index_name}"
-        indexes_path = f"/accounts/{account_id}/vectorize/v2/indexes"
-        metadata_path = f"/accounts/{account_id}/vectorize/v2/indexes/{index_name}/metadata-indexes"
-
         try:
-            self._vectorize_get(index_path)
+            self._client.vectorize.indexes.get(index_name, account_id=account_id)
             logger.info("Vectorize index '%s' already exists", index_name)
-        except requests.exceptions.HTTPError as exc:
-            response = getattr(exc, "response", None)
-            status = response.status_code if response is not None else None
-            if status != 404:
-                raise
-            dim = self._dim
+        except Exception:
             logger.info(
                 "Creating Vectorize index '%s' (dim=%d, metric=%s)",
                 index_name,
-                dim,
+                self._dim,
                 self._cfg.vector_metric,
             )
-            payload = {"name": index_name, "config": {"dimensions": dim, "metric": self._cfg.vector_metric}}
-            self._vectorize_post(indexes_path, json_data=payload)
+            self._client.vectorize.indexes.create(
+                account_id=account_id,
+                name=index_name,
+                config={"dimensions": self._dim, "metric": self._cfg.vector_metric},
+            )
 
         present: set[str] = set()
         try:
-            meta_resp = self._vectorize_get(metadata_path)
-            items = _extract_result(meta_resp, "indexes")
-            for item in items or []:
-                name = None
-                if isinstance(item, dict):
-                    name = item.get("property_name") or item.get("propertyName")
+            meta_resp = self._client.vectorize.indexes.metadata_index.list(
+                index_name,
+                account_id=account_id,
+            )
+            items = _to_dict(meta_resp) or {}
+            indexes = items.get("indexes") or items.get("result", {}).get("indexes", [])
+            for item in indexes or []:
+                name = _resolve_attr(item, "property_name", "propertyName")
                 if name:
                     present.add(name)
-        except requests.exceptions.HTTPError as exc:
-            response = getattr(exc, "response", None)
-            status = response.status_code if response is not None else None
-            if status != 404:
-                raise
+        except Exception:
+            logger.warning(
+                "Metadata indexes endpoint unavailable; skipping creation"
+            )
+            present = set()
+            metadata_supported = False
+        else:
+            metadata_supported = True
 
-        metadata_supported = True
         for prop in ("repo", "path", "language"):
             if not metadata_supported:
                 break
@@ -179,23 +171,22 @@ class PersistInVectorize(PersistenceAdapter):
                 continue
             logger.info("Creating metadata index for '%s'", prop)
             try:
-                self._vectorize_post(
-                    metadata_path,
-                    json_data={"index_type": "string", "property_name": prop},
+                self._client.vectorize.indexes.metadata_index.create(
+                    index_name,
+                    account_id=account_id,
+                    index_type="string",
+                    property_name=prop,
                 )
-            except requests.exceptions.HTTPError as exc:
-                response = getattr(exc, "response", None)
-                status = response.status_code if response is not None else None
-                if status in {409, 400}:
+            except Exception as exc:
+                message = str(exc).lower()
+                if "already exists" in message:
                     logger.info("Metadata index for '%s' already exists", prop)
                     continue
-                if status == 404:
-                    logger.warning(
-                        "Metadata indexes endpoint unavailable (status=404); skipping creation"
-                    )
-                    metadata_supported = False
-                    break
-                raise
+                logger.warning(
+                    "Metadata index creation failed for '%s' (%s); skipping", prop, exc
+                )
+                metadata_supported = False
+                break
 
         # 3) Ensure D1 table exists (SQLite-compatible)
         # status: 'pending' or 'committed'; mutation_id helps trace vectorize barrier
@@ -232,6 +223,16 @@ class PersistInVectorize(PersistenceAdapter):
                 database_id=self._cfg.d1_database_id,
                 sql=idx_sql,
             )
+
+        fts_sql = f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {self._cfg.d1_table}_fts
+        USING fts5(id, chunk);
+        """
+        self._client.d1.database.query(
+            account_id=account_id,
+            database_id=self._cfg.d1_database_id,
+            sql=fts_sql,
+        )
 
         self._setup_done = True
         logger.info("Persistence setup complete")
@@ -277,9 +278,8 @@ class PersistInVectorize(PersistenceAdapter):
                 params=row,
             )
 
-    def _ndjson_for(self, chunks: Sequence[Chunk]) -> bytes:
-        """Build NDJSON bytes for Vectorize upsert: {id, values, metadata} per line."""
-        buf = io.StringIO()
+    def _vector_records(self, chunks: Sequence[Chunk]) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
         for c in chunks:
             if not isinstance(c.embeddings, (bytes, bytearray, memoryview)):
                 raise ValueError("Chunk.embeddings must be bytes before persistence")
@@ -291,71 +291,24 @@ class PersistInVectorize(PersistenceAdapter):
             }
             if c.metadata:
                 metadata.update(c.metadata)
-            line = {
-                "id": c.id(),
-                "values": values,
-                "metadata": metadata,
-            }
-            buf.write(json.dumps(line, separators=(",", ":")))
-            buf.write("\n")
-        return buf.getvalue().encode("utf-8")
+            records.append(
+                {
+                    "id": c.id(),
+                    "values": values,
+                    "metadata": metadata,
+                }
+            )
+        return records
 
-    def _ensure_http_client(self) -> requests.Session:
-        if not self._api_token:
-            raise RuntimeError("CLOUDFLARE_API_TOKEN is required for Vectorize operations")
-        if self._http is None:
-            session = requests.Session()
-            session.headers.update({"Authorization": f"Bearer {self._api_token}"})
-            self._http = session
-        return self._http
-
-    def _vectorize_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_data: Optional[Dict[str, Any]] = None,
-        content: Optional[bytes] = None,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
-        client = self._ensure_http_client()
-        hdrs = dict(headers or {})
-        if json_data is not None:
-            hdrs.setdefault("Content-Type", "application/json")
-        url = f"{self._base_url}{path}"
-        resp = client.request(method, url, json=json_data, data=content, headers=hdrs, timeout=30)
-        resp.raise_for_status()
-        if not resp.content:
-            return {}
-        try:
-            return resp.json()
-        except ValueError:
-            return {}
-
-    def _vectorize_get(self, path: str) -> Dict[str, Any]:
-        return self._vectorize_request("GET", path)
-
-    def _vectorize_post(
-        self,
-        path: str,
-        *,
-        json_data: Optional[Dict[str, Any]] = None,
-        content: Optional[bytes] = None,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> Dict[str, Any]:
-        return self._vectorize_request("POST", path, json_data=json_data, content=content, headers=headers)
-
-    def _upsert_vectors(self, payload: bytes) -> str:
-        """Send NDJSON payload to Vectorize and return the mutation id."""
-        account_id = self._cfg.account_id
-        index_name = self._cfg.vectorize_index
-        path = f"/accounts/{account_id}/vectorize/v2/indexes/{index_name}/upsert"
-        data = self._vectorize_post(
-            path,
-            content=payload,
-            headers={"Content-Type": "application/x-ndjson"},
+    def _upsert_vectors(self, records: List[Dict[str, Any]]) -> str:
+        """Send vector records to Vectorize and return the mutation id."""
+        upsert_result = self._client.vectorize.indexes.upsert(
+            self._cfg.vectorize_index,
+            account_id=self._cfg.account_id,
+            body={"vectors": records},
+            unparsable_behavior="error",
         )
-        mutation_id = extract_mutation_id(data)
+        mutation_id = extract_mutation_id(upsert_result)
         if not mutation_id:
             raise RuntimeError("Vectorize upsert did not return a mutation_id")
         return mutation_id
@@ -366,11 +319,11 @@ class PersistInVectorize(PersistenceAdapter):
         (consistent read barrier).
         """
         deadline = time.time() + self._cfg.poll_timeout_s
-        account_id = self._cfg.account_id
-        index_name = self._cfg.vectorize_index
-        path = f"/accounts/{account_id}/vectorize/v2/indexes/{index_name}/info"
         while True:
-            info = self._vectorize_get(path)
+            info = self._client.vectorize.indexes.info(
+                self._cfg.vectorize_index,
+                account_id=self._cfg.account_id,
+            )
             processed = extract_processed_mutation(info)
             if processed is not None and processed >= mutation_id:
                 return
@@ -391,6 +344,26 @@ class PersistInVectorize(PersistenceAdapter):
                 params=[mutation_id, c.id()],
             )
 
+    def _upsert_fts_rows(self, chunks: Sequence[Chunk]) -> None:
+        if not chunks:
+            return
+        delete_sql = f"DELETE FROM {self._cfg.d1_table}_fts WHERE id=?1;"
+        insert_sql = f"INSERT INTO {self._cfg.d1_table}_fts (id, chunk) VALUES (?1, ?2);"
+        for c in chunks:
+            chunk_id = c.id()
+            self._client.d1.database.query(
+                account_id=self._cfg.account_id,
+                database_id=self._cfg.d1_database_id,
+                sql=delete_sql,
+                params=[chunk_id],
+            )
+            self._client.d1.database.query(
+                account_id=self._cfg.account_id,
+                database_id=self._cfg.d1_database_id,
+                sql=insert_sql,
+                params=[chunk_id, c.chunk],
+            )
+
     def persist_batch(self, chunks: Sequence[Chunk]) -> None:
         """
         Persist a batch of chunks with a read-consistent workflow:
@@ -406,12 +379,13 @@ class PersistInVectorize(PersistenceAdapter):
             return
         self._ensure_setup()
         self._insert_pending_rows(chunks)
-        ndjson_bytes = self._ndjson_for(chunks)
+        vector_records = self._vector_records(chunks)
         logger.info("Upserting %d vectors to '%s'...", len(chunks), self._cfg.vectorize_index)
-        mutation_id = self._upsert_vectors(ndjson_bytes)
+        mutation_id = self._upsert_vectors(vector_records)
         logger.info("Upsert mutation_id=%s; waiting for processing...", mutation_id)
         self._wait_processed(mutation_id)
         self._mark_committed(chunks, mutation_id)
+        self._upsert_fts_rows(chunks)
         logger.info("Batch committed (n=%d)", len(chunks))
 
 
@@ -441,13 +415,14 @@ class PersistInVectorize(PersistenceAdapter):
             return
         # Delete vectors in Vectorize
         try:
-            account_id = self._cfg.account_id
-            index_name = self._cfg.vectorize_index
-            path = f"/accounts/{account_id}/vectorize/v2/indexes/{index_name}/delete_by_ids"
-            self._vectorize_post(path, json_data={"ids": ids})
-        except requests.exceptions.RequestException as e:
-            # Log but proceed to attempt D1 deletion to keep sources authoritative.
+            self._client.vectorize.indexes.delete_by_ids(
+                self._cfg.vectorize_index,
+                account_id=self._cfg.account_id,
+                ids=ids,
+            )
+        except Exception as e:
             logger.warning("Vectorize delete_by_ids failed (will still delete from D1): %s", e)
+        self._delete_fts_rows(ids)
         # Delete rows from D1
         placeholders_ids = ",".join(["?"] * len(ids))
         delete_query = f"DELETE FROM {self._cfg.d1_table} WHERE id IN ({placeholders_ids})"
@@ -458,14 +433,24 @@ class PersistInVectorize(PersistenceAdapter):
             params=ids,
         )
 
+    def _delete_fts_rows(self, ids: Sequence[str]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join(["?"] * len(ids))
+        delete_sql = f"DELETE FROM {self._cfg.d1_table}_fts WHERE id IN ({placeholders});"
+        self._client.d1.database.query(
+            account_id=self._cfg.account_id,
+            database_id=self._cfg.d1_database_id,
+            sql=delete_sql,
+            params=list(ids),
+        )
 
-def _cloudflare_factory(*, cfg: PersistConfig, dim: int, client: Cloudflare | None = None, http_client: Optional[requests.Session] = None, api_token: Optional[str] = None, **_: Any) -> PersistenceAdapter:
+
+def _cloudflare_factory(*, cfg: PersistConfig, dim: int, client: Cloudflare | None = None, **_: Any) -> PersistenceAdapter:
     return PersistInVectorize(
         cfg=cfg,
         dim=dim,
         client=client,
-        http_client=http_client,
-        api_token=api_token,
     )
 
 

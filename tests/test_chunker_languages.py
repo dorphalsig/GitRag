@@ -39,7 +39,10 @@ class TestChunkerWithTreeSitter(unittest.TestCase):
             cls.grammar_config = json.load(handle)
 
     def _parse(self, lang: str, data: bytes):
-        parser = get_parser(lang)
+        try:
+            parser = get_parser(lang)
+        except Exception as exc:  # pragma: no cover - dependency conditional
+            self.skipTest(f"tree_sitter not available: {exc}")
         return parser.parse(data)
 
     def _exec_nodes(self, lang: str, root):
@@ -55,7 +58,7 @@ class TestChunkerWithTreeSitter(unittest.TestCase):
             sexprs = chunker.GRAMMAR_QUERIES[cat].get(lang, [])
             if not sexprs:
                 continue
-            nodes.extend(chunker._query_nodes(lang, root, sexprs, cap))
+            nodes.extend(chunker._query_nodes(root, lang, sexprs, cap))
         # De-dup and sort by source order
         uniq = {}
         for n in nodes:
@@ -68,7 +71,7 @@ class TestChunkerWithTreeSitter(unittest.TestCase):
         sexprs = chunker.GRAMMAR_QUERIES["Type"].get(lang, [])
         if not sexprs:
             return []
-        nodes = chunker._query_nodes(lang, root, sexprs, "type")
+        nodes = chunker._query_nodes(root, lang, sexprs, "type")
         # filter to top-level only
         return [n for n in nodes if chunker._is_top_level_type(n, lang)]
 

@@ -1,0 +1,3 @@
+{"property_name": "repo", "index_type": "string"}
+{"property_name": "path", "index_type": "string"}
+{"property_name": "language", "index_type": "string"}

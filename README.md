@@ -12,6 +12,8 @@
 ## Vision
 GitRag keeps Git and GitHub repositories searchable for retrieval-augmented generation by combining Tree-sitter powered chunking with lightweight embedding and persistence steps that fit within the GitHub Actions free tier. The pipeline focuses on incremental updates, storing metadata and vectors in Cloudflare while keeping raw text in D1 for keyword search.
 
+Looking for the retrieval/query side? Check out the companion service in `dorphalsig/GitRag-Retrieve` which consumes these indexes for hybrid (vector + keyword) search.
+
 ## Roadmap vs Implementation
 ### Already Delivered
 - Deterministic AST + document chunker covering code and structured formats with size-aware fallbacks.

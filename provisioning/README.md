@@ -12,7 +12,7 @@ Use these artifacts when preparing Cloudflare resources for GitRag in CI/CD. The
    wrangler d1 execute <DATABASE_NAME> --file provisioning/d1/schema.sql
    ```
 
-   The schema creates the `chunks` table plus secondary indexes (`repo_path`, `language`, `status`).
+   The schema creates the `chunks` table, secondary indexes (`repo_path`, `language`, `status`), and the `chunks_fts` virtual table (FTS5) used for keyword retrieval.
 
 ## Cloudflare Vectorize
 

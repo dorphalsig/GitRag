@@ -1,10 +1,7 @@
-import json
 import os
 import sys
 import types
 import unittest
-from typing import Optional
-
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,9 +16,6 @@ from persistence_registry import (
 )
 from Chunk import Chunk  # type: ignore
 import chunker  # type: ignore
-import requests
-
-
 class StubDatabase:
     def __init__(self):
         self.queries = []
@@ -34,73 +28,63 @@ class StubDatabase:
         return types.SimpleNamespace(result=[])
 
 
+class StubMetadataIndex:
+    def __init__(self, parent):
+        self._parent = parent
+
+    def list(self, name, account_id):
+        return types.SimpleNamespace(
+            indexes=[{"property_name": m} for m in self._parent.metadata]
+        )
+
+    def create(self, name, account_id, index_type, property_name):
+        if property_name not in self._parent.metadata:
+            self._parent.metadata.append(property_name)
+        return types.SimpleNamespace()
+
+
+class StubVectorizeIndexes:
+    def __init__(self):
+        self.created = False
+        self.metadata: list[str] = []
+        self.upserts: list[str] = []
+        self.deleted: list[list[str]] = []
+        self.processed = ""
+        self.metadata_index = StubMetadataIndex(self)
+
+    def get(self, name, account_id):
+        if not self.created:
+            raise Exception("missing")
+        return types.SimpleNamespace()
+
+    def create(self, account_id, name, config):
+        self.created = True
+        return types.SimpleNamespace()
+
+    def upsert(self, name, account_id, body, unparsable_behavior):
+        self.upserts.append(body)
+        self.processed = "m1"
+        return types.SimpleNamespace(mutation_id="m1")
+
+    def info(self, name, account_id):
+        return types.SimpleNamespace(processed_up_to_mutation=self.processed)
+
+    def delete_by_ids(self, name, account_id, ids):
+        self.deleted.append(list(ids))
+        return types.SimpleNamespace()
+
+
 class StubCloudflare:
     def __init__(self):
         self.d1 = types.SimpleNamespace(database=StubDatabase())
+        self.vectorize = types.SimpleNamespace(indexes=StubVectorizeIndexes())
 
 
 class PersistTests(unittest.TestCase):
     def setUp(self):
         self.cfg = PersistConfig(account_id="acct", vectorize_index="idx", d1_database_id="db")
         self.client = StubCloudflare()
-        self.persist = PersistInVectorize(
-            cfg=self.cfg,
-            dim=3,
-            client=self.client,
-            api_token="stub",
-        )
-        self._index_exists = False
-        self._metadata: list[str] = []
-        self._deleted_ids: list[str] = []
-        self._upsert_payload: bytes | None = None
-        self._last_mutation: str | None = None
-
-        def _raise_http(status: int, path: str):
-            resp = requests.Response()
-            resp.status_code = status
-            resp.url = path
-            raise requests.exceptions.HTTPError(response=resp)
-
-        def fake_get(instance: PersistInVectorize, path: str):
-            if path.endswith(f"/indexes/{self.cfg.vectorize_index}"):
-                if not self._index_exists:
-                    _raise_http(404, path)
-                return {"result": {}}
-            if path.endswith("/metadata-indexes"):
-                return {"result": {"indexes": [{"property_name": m} for m in self._metadata]}}
-            if path.endswith("/info"):
-                processed = self._last_mutation or ""
-                return {"result": {"processed_up_to_mutation": processed}}
-            return {}
-
-        def fake_post(
-            instance: PersistInVectorize,
-            path: str,
-            *,
-            json_data: Optional[dict] = None,
-            content: Optional[bytes] = None,
-            headers: Optional[dict] = None,
-        ):
-            if path.endswith("/indexes"):
-                self._index_exists = True
-                return {"result": {"name": self.cfg.vectorize_index}}
-            if path.endswith("/metadata-indexes"):
-                prop = (json_data or {}).get("property_name")
-                if prop and prop not in self._metadata:
-                    self._metadata.append(prop)
-                return {"result": {}}
-            if path.endswith("/upsert"):
-                self._upsert_payload = content
-                self._last_mutation = "m1"
-                return {"mutation_id": "m1"}
-            if path.endswith("/delete_by_ids"):
-                ids = (json_data or {}).get("ids") or []
-                self._deleted_ids = list(ids)
-                return {"result": {}}
-            return {"result": {}}
-
-        self.persist._vectorize_get = types.MethodType(fake_get, self.persist)
-        self.persist._vectorize_post = types.MethodType(fake_post, self.persist)
+        self.persist = PersistInVectorize(cfg=self.cfg, dim=3, client=self.client)
 
     def test_persist_batch_runs_setup_and_commits(self):
         fixture = Path(ROOT) / "tests" / "fixtures" / "Markdown.md"
@@ -117,25 +101,37 @@ class PersistTests(unittest.TestCase):
         chunk = source_chunks[0]
         self.persist.persist_batch([chunk])
 
-        self.assertTrue(self._index_exists)
-        self.assertCountEqual(self._metadata, ["repo", "path", "language"])
-        stored = self._upsert_payload
+        indexes = self.client.vectorize.indexes
+        self.assertTrue(indexes.created)
+        self.assertCountEqual(indexes.metadata, ["repo", "path", "language"])
+        stored = indexes.upserts[-1]
         self.assertIsNotNone(stored)
-        payload = stored.decode("utf-8").strip()
-        self.assertIn("\"id\"", payload)
-        self.assertIn("\"values\"", payload)
+        vectors = stored.get("vectors") if isinstance(stored, dict) else None
+        self.assertIsInstance(vectors, list)
+        self.assertTrue(vectors)
+        entry = vectors[0]
+        self.assertIn("id", entry)
+        self.assertIn("values", entry)
 
         queries = self.client.d1.database.queries
         self.assertTrue(any("INSERT INTO" in sql for sql, _ in queries))
         self.assertTrue(any("UPDATE" in sql for sql, _ in queries))
+        self.assertTrue(
+            any("INSERT INTO chunks_fts" in sql for sql, _ in queries),
+            "Expected FTS insert",
+        )
 
     def test_delete_batch_deletes_ids(self):
         chunk_id = "abc"
         self.client.d1.database.select_result = [{"id": chunk_id}]
         self.persist.delete_batch(["file.txt"])
-        self.assertEqual(self._deleted_ids, [chunk_id])
+        self.assertEqual(self.client.vectorize.indexes.deleted[-1], [chunk_id])
         delete_queries = [sql for sql, _ in self.client.d1.database.queries if sql.startswith("DELETE")]
         self.assertTrue(delete_queries)
+        self.assertTrue(
+            any("chunks_fts" in sql for sql in delete_queries),
+            "Expected FTS deletes",
+        )
 
     def test_create_persistence_adapter_aliases(self):
         adapter = create_persistence_adapter("cloudflare", cfg=self.cfg, dim=3, client=self.client)
@@ -193,11 +189,10 @@ class PersistTests(unittest.TestCase):
             missing.append("CLOUDFLARE_API_TOKEN")
         if not dim_env:
             missing.append("GITRAG_EMBED_DIM")
-        if missing:
-            self.skipTest(
-                "Missing environment variables for Cloudflare persistence test: "
-                + ", ".join(missing)
-            )
+        self.assertFalse(
+            missing,
+            "Missing environment variables for Cloudflare persistence test: " + ", ".join(missing),
+        )
 
         dim = int(dim_env)
 

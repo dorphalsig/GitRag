@@ -1,6 +1,6 @@
 import hashlib
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 
@@ -17,6 +17,7 @@ class Chunk:
     end_bytes: int
     signature: str = ""
     embeddings: Optional[bytes] = field(default=None, compare=False, repr=False)
+    metadata: Dict[str, Any] = field(default_factory=dict, compare=False)
 
     def id(self):
         id = f"{self.repo}::{self.path}::{self.start_bytes}::{self.end_bytes}"
@@ -36,4 +37,3 @@ class Chunk:
                 "calculator.calculate(...) must return bytes or bytes-like"
             )
         object.__setattr__(self, "embeddings", raw)
-
