@@ -20,9 +20,14 @@ import os
 import subprocess
 from typing import Dict, Iterable, List, Set, Tuple
 
-from Persist import PersistConfig, PersistInVectorize
+from Persist import (
+    PersistConfig,
+    create_persistence_adapter,
+    PersistenceAdapter,
+)
 from Calculators.CodeRankCalculator import CodeRankCalculator
-import Chunker
+import chunker
+from text_detection import BinaryDetector
 
 logger = logging.getLogger("feed")
 
@@ -127,105 +132,77 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
 
 
 
-def _filter_text_files(paths: Set[str], rng: Tuple[str, str]) -> Set[str]:
-    """Filter a candidate path set down to text files only.
-
-    Inputs:
-        paths: candidate paths to consider for processing.
-        rng: (from_ref, to_ref) used to query file stats for the same change range.
-
-    Behavior:
-        - Runs: git diff --numstat --find-renames -z <from>..<to>
-        - For each NUL-terminated record:
-            * Normal shape: "added<TAB>deleted<TAB>path"
-            * Rename shape: "added<TAB>deleted<TAB>old" (this token) then "new" (next token)
-          Binaries show '-' counts; only digit counts are treated as text.
-        - Classifies exactly the path present in `paths`:
-            * normal → the path field
-            * rename → the *new* path
-        - Any remaining candidates fall back to: git check-attr binary -- <path>
-          (skip if 'binary: set').
-
-    Outputs:
-        A set with only text files (safe to chunk/encode).
-
-    Exceptions:
-        Propagates RuntimeError from _run_git(...) if git fails; attribute checks are best-effort.
-    """
+def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) -> Set[str]:
+    """Filter candidate paths down to text files using a shared binary detector."""
     if not paths:
         return set()
 
-    frm, to = rng
-    raw = _run_git(["diff", "--numstat", "--find-renames", "-z", f"{frm}..{to}"])
-    tokens = [t for t in raw.split("\x00") if t]
-
+    detector = detector or BinaryDetector(_run_git)
     text: Set[str] = set()
-    i = 0
-    while i < len(tokens):
-        parts = tokens[i].split("\t")
-        if len(parts) < 3:
-            logger.debug("Skipping malformed numstat record: %r", tokens[i])
-            i += 1
-            continue
-
-        added, deleted, path_or_old = parts[0], parts[1], parts[2]
-        counts_are_digits = added.isdigit() and deleted.isdigit()
-
-        # Normal case: a,d,path in this token
-        if path_or_old in paths:
-            if counts_are_digits:
-                text.add(path_or_old)
-            i += 1
-            continue
-
-        # Rename case: a,d,old in this token; next token is new Path
-        if i + 1 < len(tokens):
-            new_path = tokens[i + 1]
-            if new_path in paths and counts_are_digits:
-                text.add(new_path)
-            i += 2
-        else:
-            i += 1
-
-    # Fallback attribute check for any remaining candidates
-    for p in sorted(paths - text):
+    for p in sorted(paths):
         try:
-            out = _run_git(["check-attr", "binary", "--", p]).strip()
-            if not out.endswith(": set"):
+            if not detector.is_binary(p):
                 text.add(p)
-        except Exception:
-            logger.debug("check-attr failed for %s; leaving excluded as conservative default", p)
-
+        except Exception as exc:  # pragma: no cover - defensive log only
+            logger.debug("Binary detection failed for %s: %s", p, exc)
     return text
 
 
 
 
 
-def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistInVectorize]:
-    """Initialize the embedding calculator and persistence layer.
+def _collect_full_repo(detector: BinaryDetector) -> Tuple[Set[str], List[str], List[Dict[str, str]]]:
+    """Enumerate all repo files (tracked + unignored) and classify text vs binary."""
+    tracked = _list_paths(["ls-files", "--cached"])
+    others = _list_paths(["ls-files", "--others", "--exclude-standard"])
+    candidates = tracked | others
+    text = _filter_text_files(candidates, detector=detector)
+    skipped = sorted(candidates - text)
+    actions = [{"action": "process", "path": p, "reason": "full-index"} for p in sorted(text)]
+    return text, skipped, actions
 
-    Env:
-        CF_ACCOUNT_ID, CF_VECTORIZE_INDEX, CF_D1_DATABASE_ID
+
+def _list_paths(args: List[str]) -> Set[str]:
+    """Return git command output as a set of file paths, ignoring blanks."""
+    raw = _run_git(args)
+    return {line for line in (s.strip() for s in raw.splitlines()) if line}
+
+
+def _env_value(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
+
+
+def _resolve_cf_ids() -> PersistConfig:
+    account_id = _env_value("CLOUDFLARE_ACCOUNT_ID")
+    vectorize_index = _env_value("CLOUDFLARE_VECTORIZE_INDEX")
+    d1_database_id = _env_value("CLOUDFLARE_D1_DATABASE_ID")
+    if not (account_id and vectorize_index and d1_database_id):
+        raise RuntimeError(
+            "Missing Cloudflare env: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_VECTORIZE_INDEX, CLOUDFLARE_D1_DATABASE_ID"
+        )
+    return PersistConfig(
+        account_id=account_id,
+        vectorize_index=vectorize_index,
+        d1_database_id=d1_database_id,
+    )
+
+
+def _load_components(repo: str, adapter_name: str | None = None) -> Tuple[CodeRankCalculator, PersistenceAdapter]:
+    """Initialize the embedding calculator and persistence layer.
 
     Raises:
         RuntimeError: when any required env var is missing.
     """
-    cfg = PersistConfig(
-        account_id=(os.environ.get("CF_ACCOUNT_ID") or "").strip(),
-        vectorize_index=(os.environ.get("CF_VECTORIZE_INDEX") or "").strip(),
-        d1_database_id=(os.environ.get("CF_D1_DATABASE_ID") or "").strip(),
-    )
-    if not (cfg.account_id and cfg.vectorize_index and cfg.d1_database_id):
-        raise RuntimeError("Missing Cloudflare env: CF_ACCOUNT_ID, CF_VECTORIZE_INDEX, CF_D1_DATABASE_ID")
+    cfg = _resolve_cf_ids()
 
     calc = CodeRankCalculator()
-    persist = PersistInVectorize(client=None, cfg=cfg, dim=calc.dimensions)
-    logger.info("Initialized components for repo=%s (dim=%d)", repo, calc.dimensions)
+    adapter_key = (adapter_name or os.environ.get("GITRAG_PERSIST_ADAPTER", "cloudflare")).strip() or "cloudflare"
+    persist = create_persistence_adapter(adapter_key, cfg=cfg, dim=calc.dimensions)
+    logger.info("Initialized components for repo=%s (dim=%d, adapter=%s)", repo, calc.dimensions, adapter_key)
     return calc, persist
 
 
-def _process_files(paths: Iterable[str], repo: str, calc: CodeRankCalculator, persist: PersistInVectorize) -> int:
+def _process_files(paths: Iterable[str], repo: str, calc: CodeRankCalculator, persist: PersistenceAdapter) -> int:
     """Chunk, embed, and persist all given text files.
 
     Returns:
@@ -234,15 +211,21 @@ def _process_files(paths: Iterable[str], repo: str, calc: CodeRankCalculator, pe
     total = 0
     batch: List = []
     for p in paths:
+        logger.info("Processing file: %s", p)
         try:
-            chunks = Chunker.chunk_file(p, repo)
+            chunks = chunker.chunk_file(p, repo)
+            logger.debug("File %s produced %d chunks", p, len(chunks))
             for c in chunks:
+                logger.debug(
+                    "Calculating embeddings for %s:%d-%d", p, c.start_bytes, c.end_bytes
+                )
                 c.calculate_embeddings(calc)
             batch.extend(chunks)
         except Exception as e:
             logger.error("Failed processing %s: %s", p, e)
     if batch:
         try:
+            logger.info("Persisting batch of %d chunks", len(batch))
             persist.persist_batch(batch)
             total = len(batch)
         except Exception as e:
@@ -260,17 +243,29 @@ def main() -> None:
     - Deletes removed paths; processes text paths
     - Prints JSON summary
     """
-    parser = argparse.ArgumentParser(description="Process last-commit changes for a repository.")
+    parser = argparse.ArgumentParser(description="Process repository changes for indexing.")
     parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
+    parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
+    parser.add_argument("--adapter", help="Persistence adapter key (default: cloudflare)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    rng = _resolve_range()
-    to_proc, to_del, actions = _collect_changes(rng)
-    text_to_proc = _filter_text_files(to_proc, rng)
+    detector = BinaryDetector(_run_git)
 
-    calc, persist = _load_components(args.repo)
+    if args.full:
+        logger.info("Running in full indexing mode")
+        text_to_proc, skipped_binary, actions = _collect_full_repo(detector)
+        rng = ("FULL_REBUILD", "HEAD")
+        to_del: Set[str] = set()
+    else:
+        rng = _resolve_range()
+        to_proc, to_del, actions = _collect_changes(rng)
+        logger.info("Running in delta mode: %d process candidates, %d deletions", len(to_proc), len(to_del))
+        text_to_proc = _filter_text_files(to_proc, detector=detector)
+        skipped_binary = sorted(list(to_proc - text_to_proc))
+
+    calc, persist = _load_components(args.repo, adapter_name=args.adapter)
 
     deleted_count = 0
     if to_del:
@@ -285,10 +280,11 @@ def main() -> None:
     summary = {
         "repo": args.repo,
         "range": {"from": rng[0], "to": rng[1]},
+        "mode": "full" if args.full else "delta",
         "processed_files": len(text_to_proc),
         "deleted_files": deleted_count,
         "processed_chunks": processed_chunks,
-        "skipped_binary": sorted(list(to_proc - text_to_proc)),
+        "skipped_binary": skipped_binary,
         "actions": actions,
     }
     print(json.dumps(summary, ensure_ascii=False))

@@ -14,15 +14,16 @@
 
 from __future__ import annotations
 
-import hashlib
+import bisect
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Tuple, Optional
+from typing import Iterable, List, Tuple, Optional, Dict, Any
 
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
+from Chunk import Chunk
 
 # ---------------- Constants & Config ----------------
 # Internal constants (no knobs).
@@ -33,6 +34,55 @@ NEWLINE_WINDOW = 2_048  # cut nudge window
 FALLBACK_OVERLAP_RATIO = 0.10
 
 _ROOT_ATOM_RE = re.compile(r"\(+\s*([A-Za-z_]\w*)\b")
+_MD_ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_SETEXT_RE = re.compile(r"^([=-]{3,})\s*$")
+_RST_SETEXT_RE = re.compile(r"^([=\-~`:'\"^_*+#<>]{3,})\s*$")
+_TABLE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$")
+_FENCE_RE = re.compile(r"^(```+|~~~+)(.*)$")
+_REQUIREMENT_PATTERN = re.compile(r"\b(shall|must|should|required|use case|scenario)\b", re.IGNORECASE)
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _slugify(text: str) -> str:
+    """Best-effort slug for heading anchors."""
+    lowered = text.strip().lower()
+    sanitized = re.sub(r"[^a-z0-9\s-]", "", lowered)
+    collapsed = re.sub(r"[\s-]+", "-", sanitized).strip("-")
+    return collapsed
+
+
+@dataclass
+class DocContext:
+    text: str
+    char_to_byte: List[int]
+    lines: List[str]
+    line_char_offsets: List[int]
+    total_bytes: int
+    eol: str
+
+
+@dataclass
+class DocBlock:
+    start_char: int
+    end_char: int
+    type: str
+    heading_level: Optional[int] = None
+    heading_title: str = ""
+    heading_anchor: str = ""
+    fence_lang: Optional[str] = None
+
+
+def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
+    return DocBlock(
+        start_char=start_char,
+        end_char=end_char,
+        type=block.type,
+        heading_level=block.heading_level,
+        heading_title=block.heading_title,
+        heading_anchor=block.heading_anchor,
+        fence_lang=block.fence_lang,
+    )
 
 
 def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
@@ -52,46 +102,33 @@ def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, di
 
 CODE_EXTENSIONS, NONCODE_TS_GRAMMAR, GRAMMAR_QUERIES = _load_grammar_config()
 
-# Backwards-compatible aliases for helpers/tests that relied on direct dict names
-PACKAGE_LIKE_SEXPR = GRAMMAR_QUERIES.get("Package", {})
-TYPE_LIKE_SEXPR = GRAMMAR_QUERIES.get("Type", {})
-CONSTRUCTOR_LIKE_SEXPR = GRAMMAR_QUERIES.get("Constructor", {})
-METHOD_LIKE_SEXPR = GRAMMAR_QUERIES.get("Method", {})
-FIELD_LIKE_SEXPR = GRAMMAR_QUERIES.get("Field", {})
-ACCESSOR_LIKE_SEXPR = GRAMMAR_QUERIES.get("Accessor", {})
-INITIALIZER_LIKE_SEXPR = GRAMMAR_QUERIES.get("Initializer", {})
-ENUM_MEMBER_LIKE_SEXPR = GRAMMAR_QUERIES.get("EnumMember", {})
-ANNOTATION_ELEMENT_LIKE_SEXPR = GRAMMAR_QUERIES.get("AnnotationElement", {})
-RECORD_COMPONENT_LIKE_SEXPR = GRAMMAR_QUERIES.get("RecordComponent", {})
+# Document chunking parameters
+DOC_SOFT_MAX_BYTES = 8_192
+DOC_HARD_CAP_BYTES = 16_384
+DOC_OVERLAP_BYTES = 256
+DOC_MIN_CHUNK_BYTES = 2_048
+DOC_GRAMMAR_VERSION = "doc-chunker-v1"
 
-
-@dataclass(frozen=True)
-class Chunk:
-    chunk: str
-    repo: str
-    path: str
-    language: str
-    start_rc: tuple[int, int]
-    end_rc: tuple[int, int]
-    start_bytes: int
-    end_bytes: int
-    signature: str = ""
-
-    def id(self):
-        id = f"{self.repo}::{self.path}::{self.start_bytes}::{self.end_bytes}"
-        return hashlib.sha256(id.encode()).hexdigest()
-
-
+DOC_MARKDOWN_EXTS = {"md", "markdown", "rst"}
+DOC_JSON_EXTS = {"json", "jsonl", "ndjson"}
+DOC_YAML_EXTS = {"yaml", "yml"}
+DOC_TOML_EXTS = {"toml"}
+DOC_CSV_EXTS = {"csv"}
+DOC_TSV_EXTS = {"tsv"}
 def chunk_file(path: str, repo: str) -> List[Chunk]:
     file_extension = Path(path).suffix[1:]
     contents = Path(path).read_bytes()
 
+    lower_ext = file_extension.lower()
+
     if lang := CODE_EXTENSIONS.get(file_extension, None):
         chunks = _chunk_code(contents, path, lang, repo)
+    elif lower_ext in DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS:
+        chunks = _chunk_document(contents, path, lower_ext, repo)
     elif lang := NONCODE_TS_GRAMMAR.get(file_extension, None):
         chunks = _chunk_non_code(contents, path, lang, repo)
     else:
-        chunks = _chunk_fallback(contents, path, "plain text", repo)
+        chunks = _chunk_document(contents, path, lower_ext, repo)
 
     return chunks
 
@@ -171,6 +208,841 @@ def _chunk_fallback(contents: bytes, path: str, language: str, repo: str) -> Lis
     overlap = int(FALLBACK_OVERLAP_RATIO * SOFT_MAX_BYTES)
     ranges = _newline_aligned_ranges(contents, 0, len(contents), overlap=overlap)
     return [_make_chunk(contents, s, e, path, language, repo) for s, e in ranges]
+
+
+def _chunk_document(contents: bytes, path: str, ext: str, repo: str) -> List[Chunk]:
+    ctx = _build_doc_context(contents)
+    if ctx is None:
+        return _chunk_plaintext_bytes(contents, path, "text", repo)
+
+    if ext in DOC_MARKDOWN_EXTS:
+        return _chunk_markdown(ctx, contents, path, repo, "markdown")
+    if ext in DOC_JSON_EXTS:
+        return _chunk_json(ctx, contents, path, repo, ext)
+    if ext in DOC_YAML_EXTS or ext in DOC_TOML_EXTS:
+        return _chunk_yaml_toml(ctx, contents, path, repo, ext)
+    if ext in DOC_CSV_EXTS or ext in DOC_TSV_EXTS:
+        delimiter = ',' if ext in DOC_CSV_EXTS else '\t'
+        return _chunk_csv(ctx, contents, path, repo, delimiter)
+
+    return _chunk_plaintext(ctx, contents, path, repo)
+
+
+def _chunk_markdown(ctx: DocContext, contents: bytes, path: str, repo: str, language: str) -> List[Chunk]:
+    blocks = _parse_markdown_blocks(ctx)
+    if not blocks:
+        return _chunk_plaintext(ctx, contents, path, repo)
+
+    segments: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    heading_stack: List[Tuple[int, str, str]] = []
+
+    for block in blocks:
+        if block.type == "heading":
+            level = block.heading_level or 1
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, block.heading_title, block.heading_anchor))
+
+        for part in _split_block_if_needed(ctx, block):
+            part_bytes = ctx.char_to_byte[part.end_char] - ctx.char_to_byte[part.start_char]
+            if current is None:
+                current = _new_segment(part.start_char, heading_stack)
+            else:
+                current_size = ctx.char_to_byte[part.end_char] - ctx.char_to_byte[current["start_char"]]
+                if current["blocks"] and current_size > DOC_SOFT_MAX_BYTES:
+                    segments.append(current)
+                    current = _new_segment(part.start_char, heading_stack)
+
+            current["blocks"].append(part)
+            current["end_char"] = part.end_char
+            current["block_types"].add(part.type)
+            if part.fence_lang:
+                current["fence_langs"].add(part.fence_lang)
+
+    if current and current["blocks"]:
+        segments.append(current)
+
+    segments = _merge_small_segments(ctx, segments)
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments)
+
+
+def _skip_ws(text: str, idx: int) -> int:
+    n = len(text)
+    while idx < n and text[idx] in " \t\r\n\uFEFF":
+        idx += 1
+    return idx
+
+
+def _line_prefix_start(text: str, idx: int) -> int:
+    start = idx
+    while start > 0 and text[start - 1] in " \t":
+        start -= 1
+    return start
+
+
+def _json_object_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> List[Tuple[int, int, List[str]]]:
+    spans: List[Tuple[int, int, List[str]]] = []
+    idx = start_idx + 1
+    n = len(text)
+    structure_end = start_idx
+    while True:
+        idx = _skip_ws(text, idx)
+        if idx >= n:
+            structure_end = n
+            break
+        ch = text[idx]
+        if ch == '}':
+            structure_end = idx + 1
+            idx = structure_end
+            break
+        if ch != '"':
+            break
+        try:
+            key, key_end = json.decoder.scanstring(text, idx + 1)
+        except ValueError:
+            break
+        colon = text.find(':', key_end)
+        if colon == -1:
+            break
+        value_start = _skip_ws(text, colon + 1)
+        try:
+            _, value_end = decoder.raw_decode(text, value_start)
+        except json.JSONDecodeError:
+            break
+        entry_start = _line_prefix_start(text, idx)
+        entry_end = value_end
+        while entry_end < n and text[entry_end].isspace():
+            entry_end += 1
+        if entry_end < n and text[entry_end] == ',':
+            entry_end += 1
+        spans.append((entry_start, entry_end, [key]))
+        idx = entry_end
+
+    structure_end = _skip_ws(text, idx)
+    if structure_end < n and text[structure_end] == '}':
+        structure_end += 1
+
+    if spans:
+        first_start, first_end, first_breadcrumb = spans[0]
+        if first_start > start_idx:
+            spans[0] = (start_idx, first_end, first_breadcrumb)
+        last_start, last_end, last_breadcrumb = spans[-1]
+        if structure_end > last_end:
+            spans[-1] = (last_start, structure_end, last_breadcrumb)
+    else:
+        if structure_end <= start_idx:
+            try:
+                _, structure_end = decoder.raw_decode(text, start_idx)
+            except json.JSONDecodeError:
+                structure_end = len(text)
+        spans.append((start_idx, structure_end, []))
+
+    return spans
+
+
+def _json_array_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> List[Tuple[int, int, List[str]]]:
+    spans: List[Tuple[int, int, List[str]]] = []
+    idx = start_idx + 1
+    n = len(text)
+    item_index = 0
+    structure_end = start_idx
+    while True:
+        idx = _skip_ws(text, idx)
+        if idx >= n:
+            structure_end = n
+            break
+        if text[idx] == ']':
+            structure_end = idx + 1
+            idx = structure_end
+            break
+        entry_start = _line_prefix_start(text, idx)
+        try:
+            _, value_end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            break
+        entry_end = value_end
+        while entry_end < n and text[entry_end].isspace():
+            entry_end += 1
+        if entry_end < n and text[entry_end] == ',':
+            entry_end += 1
+        spans.append((entry_start, entry_end, [f"[{item_index}]"]))
+        idx = entry_end
+        item_index += 1
+
+    structure_end = _skip_ws(text, idx)
+    if structure_end < n and text[structure_end] == ']':
+        structure_end += 1
+
+    if spans:
+        first_start, first_end, first_breadcrumb = spans[0]
+        if first_start > start_idx:
+            spans[0] = (start_idx, first_end, first_breadcrumb)
+        last_start, last_end, last_breadcrumb = spans[-1]
+        if structure_end > last_end:
+            spans[-1] = (last_start, structure_end, last_breadcrumb)
+    else:
+        if structure_end <= start_idx:
+            try:
+                _, structure_end = decoder.raw_decode(text, start_idx)
+            except json.JSONDecodeError:
+                structure_end = len(text)
+        spans.append((start_idx, structure_end, []))
+
+    return spans
+
+
+def _json_spans(ctx: DocContext, ext: str) -> List[Tuple[int, int, List[str]]]:
+    text = ctx.text
+    if ext in {"jsonl", "ndjson"}:
+        spans: List[Tuple[int, int, List[str]]] = []
+        for idx, line in enumerate(ctx.lines):
+            if not line.strip():
+                continue
+            start_char = ctx.line_char_offsets[idx]
+            end_char = start_char + len(line)
+            spans.append((start_char, end_char, [f"line {idx + 1}"]))
+        return spans
+
+    decoder = json.JSONDecoder()
+    idx = _skip_ws(text, 0)
+    if idx >= len(text):
+        return []
+    try:
+        if text[idx] == '{':
+            return _json_object_spans(decoder, text, idx)
+        if text[idx] == '[':
+            return _json_array_spans(decoder, text, idx)
+        _, end_idx = decoder.raw_decode(text, idx)
+        end_idx = _skip_ws(text, end_idx)
+        return [(idx, end_idx, [])]
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def _chunk_json(ctx: DocContext, contents: bytes, path: str, repo: str, ext: str) -> List[Chunk]:
+    spans = _json_spans(ctx, ext)
+    if not spans:
+        return _chunk_plaintext(ctx, contents, path, repo)
+
+    segments: List[Dict[str, Any]] = []
+    for start_char, end_char, breadcrumb in spans:
+        block = DocBlock(start_char=start_char, end_char=end_char, type="json")
+        for part in _split_block_if_needed(ctx, block):
+            seg = _new_segment(part.start_char, [])
+            seg["breadcrumb"] = list(breadcrumb)
+            seg["blocks"].append(part)
+            seg["end_char"] = part.end_char
+            seg["block_types"].add("json")
+            segments.append(seg)
+
+    segments = _merge_small_segments(ctx, segments)
+    language = "jsonl" if ext in {"jsonl", "ndjson"} else "json"
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments)
+
+
+def _yaml_toml_heading(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and "]" in stripped:
+            inner = stripped.strip("[]")
+            return inner.strip()
+        if ":" in stripped:
+            return stripped.split(":", 1)[0].strip()
+        if "=" in stripped:
+            return stripped.split("=", 1)[0].strip()
+        if stripped.startswith("-"):
+            payload = stripped[1:].strip()
+            if ":" in payload:
+                return payload.split(":", 1)[0].strip()
+            return payload or "-"
+    return ""
+
+
+def _chunk_yaml_toml(ctx: DocContext, contents: bytes, path: str, repo: str, ext: str) -> List[Chunk]:
+    block_tag = "yaml" if ext in DOC_YAML_EXTS else "toml"
+    lines = ctx.lines
+    offsets = ctx.line_char_offsets
+    total = len(lines)
+    i = 0
+    blocks: List[DocBlock] = []
+
+    while i < total:
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        start_char = offsets[i]
+        end_char = start_char + len(line)
+        j = i
+        while j + 1 < total:
+            nxt = lines[j + 1]
+            nxt_stripped = nxt.strip()
+            if not nxt_stripped:
+                end_char = offsets[j + 1] + len(nxt)
+                j += 1
+                continue
+            indent = len(nxt) - len(nxt.lstrip(" "))
+            if indent == 0 and not nxt.lstrip().startswith("#"):
+                break
+            end_char = offsets[j + 1] + len(nxt)
+            j += 1
+        blocks.append(DocBlock(start_char=start_char, end_char=end_char, type=block_tag))
+        i = j + 1
+
+    if not blocks:
+        return _chunk_plaintext(ctx, contents, path, repo)
+
+    segments: List[Dict[str, Any]] = []
+    for block in blocks:
+        heading = _yaml_toml_heading(ctx.text[block.start_char:block.end_char])
+        for part in _split_block_if_needed(ctx, block):
+            seg = _new_segment(part.start_char, [])
+            if heading:
+                seg["breadcrumb"] = [heading]
+            seg["blocks"].append(part)
+            seg["end_char"] = part.end_char
+            seg["block_types"].add(block_tag)
+            segments.append(seg)
+
+    segments = _merge_small_segments(ctx, segments)
+    language = "yaml" if ext in DOC_YAML_EXTS else "toml"
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments)
+
+
+def _chunk_csv(ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str) -> List[Chunk]:
+    if not ctx.text:
+        return []
+    block = DocBlock(start_char=0, end_char=len(ctx.text), type="table")
+    segments: List[Dict[str, Any]] = []
+    for part in _split_block_if_needed(ctx, block):
+        seg = _new_segment(part.start_char, [])
+        seg["blocks"].append(part)
+        seg["end_char"] = part.end_char
+        seg["block_types"].update({"table", "csv" if delimiter == ',' else "tsv"})
+        seg["table_delimiter"] = delimiter
+        segments.append(seg)
+
+    segments = _merge_small_segments(ctx, segments)
+    language = "csv" if delimiter == ',' else "tsv"
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments)
+
+
+def _chunk_plaintext(ctx: DocContext, contents: bytes, path: str, repo: str) -> List[Chunk]:
+    if not ctx.text:
+        return []
+    block = DocBlock(start_char=0, end_char=len(ctx.text), type="text")
+    segments: List[Dict[str, Any]] = []
+    for part in _split_block_if_needed(ctx, block):
+        seg = _new_segment(part.start_char, [])
+        seg["blocks"].append(part)
+        seg["end_char"] = part.end_char
+        seg["block_types"].add("text")
+        segments.append(seg)
+
+    segments = _merge_small_segments(ctx, segments)
+    return _segments_to_chunks(ctx, contents, path, repo, "text", segments)
+
+
+def _doc_byte_ranges(contents: bytes, start: int, end: int, overlap: int = DOC_OVERLAP_BYTES) -> List[Tuple[int, int]]:
+    if start >= end:
+        return []
+    ranges: List[Tuple[int, int]] = []
+    cur = start
+    while cur < end:
+        soft_end = min(cur + DOC_SOFT_MAX_BYTES, end)
+        lo = max(cur + 1, soft_end - NEWLINE_WINDOW)
+        hi = min(end - 1, soft_end + NEWLINE_WINDOW)
+        split = _nearest_newline(contents, soft_end, lo, hi)
+        if split is None:
+            split = soft_end
+        if (split - cur) > DOC_HARD_CAP_BYTES:
+            split = cur + DOC_HARD_CAP_BYTES
+        if split <= cur:
+            split = min(end, cur + DOC_HARD_CAP_BYTES)
+        ranges.append((cur, split))
+        if split >= end:
+            break
+        next_start = split - overlap
+        if next_start <= cur:
+            next_start = split
+        cur = next_start
+    return ranges
+
+
+def _chunk_plaintext_bytes(contents: bytes, path: str, language: str, repo: str) -> List[Chunk]:
+    total = len(contents)
+    if total == 0:
+        return []
+    eol = "\r\n" if b"\r\n" in contents else ("\n" if b"\n" in contents else "")
+    ranges = _doc_byte_ranges(contents, 0, total)
+    chunks: List[Chunk] = []
+    for start, end in ranges:
+        text = contents[start:end].decode("utf-8", errors="replace")
+        requirement_sentences = _find_requirement_sentences(text)
+        code_refs = {match.strip() for match in _INLINE_CODE_RE.findall(text) if match.strip()}
+        chunk_kind = "req" if requirement_sentences else "text"
+        metadata = {
+            "heading_breadcrumb": [],
+            "anchors": [],
+            "requirement_sentences": requirement_sentences,
+            "code_refs": sorted(code_refs),
+            "chunk_kind": chunk_kind,
+            "grammar_version": DOC_GRAMMAR_VERSION,
+            "eol": eol,
+            "overlap_bytes": DOC_OVERLAP_BYTES,
+        }
+        signature = _document_signature(repo, path, start, end, [], text[:120])
+        chunk = _make_chunk(
+            contents,
+            start,
+            end,
+            path,
+            language,
+            repo,
+            signature=signature,
+            metadata=metadata,
+        )
+        chunks.append(chunk)
+    return chunks
+
+
+def _new_segment(start_char: int, heading_stack: List[Tuple[int, str, str]]) -> Dict[str, Any]:
+    breadcrumb = [title for (_, title, _) in heading_stack if title]
+    anchors = [anchor for (_, _, anchor) in heading_stack if anchor]
+    return {
+        "start_char": start_char,
+        "end_char": start_char,
+        "blocks": [],
+        "breadcrumb": breadcrumb,
+        "anchors": anchors,
+        "block_types": set(),
+        "fence_langs": set(),
+    }
+
+
+def _parse_markdown_blocks(ctx: DocContext) -> List[DocBlock]:
+    blocks: List[DocBlock] = []
+    lines = ctx.lines
+    offsets = ctx.line_char_offsets
+    total = len(lines)
+    i = 0
+
+    rst_level_map = {
+        "=": 1,
+        "-": 2,
+        "~": 3,
+        "`": 4,
+        ":": 5,
+        "'": 6,
+        '"': 6,
+        "^": 6,
+        "*": 7,
+        "+": 7,
+        "#": 7,
+        "<": 7,
+        ">": 7,
+    }
+
+    while i < total:
+        line = lines[i]
+        stripped_line = line.rstrip("\r\n")
+        content = stripped_line.strip()
+        if not content:
+            i += 1
+            continue
+
+        start_char = offsets[i]
+        line_end_char = start_char + len(stripped_line) + (1 if line.endswith("\n") else 0)
+
+        # Setext/RST headings (current line + underline)
+        if i + 1 < total:
+            next_line = lines[i + 1]
+            next_clean = next_line.strip()
+            if _MD_SETEXT_RE.match(next_clean) and content:
+                level = 1 if next_clean.startswith("=") else 2
+                title = content
+                anchor = _slugify(title)
+                end_char = offsets[i + 1] + len(next_line)
+                blocks.append(
+                    DocBlock(
+                        start_char=start_char,
+                        end_char=end_char,
+                        type="heading",
+                        heading_level=level,
+                        heading_title=title,
+                        heading_anchor=anchor,
+                    )
+                )
+                i += 2
+                continue
+            if _RST_SETEXT_RE.match(next_clean) and content:
+                char = next_clean[:1]
+                level = rst_level_map.get(char, 3)
+                anchor = _slugify(content)
+                end_char = offsets[i + 1] + len(next_line)
+                blocks.append(
+                    DocBlock(
+                        start_char=start_char,
+                        end_char=end_char,
+                        type="heading",
+                        heading_level=level,
+                        heading_title=content,
+                        heading_anchor=anchor,
+                    )
+                )
+                i += 2
+                continue
+
+        # ATX heading
+        atx = _MD_ATX_HEADING_RE.match(content)
+        if atx:
+            level = len(atx.group(1))
+            raw_title = atx.group(2).strip()
+            title = raw_title.rstrip("#").strip()
+            anchor = _slugify(title)
+            end_char = start_char + len(line)
+            blocks.append(
+                DocBlock(
+                    start_char=start_char,
+                    end_char=end_char,
+                    type="heading",
+                    heading_level=level,
+                    heading_title=title,
+                    heading_anchor=anchor,
+                )
+            )
+            i += 1
+            continue
+
+        # Code fence
+        fence_match = _FENCE_RE.match(content)
+        if fence_match:
+            fence_marker = fence_match.group(1)
+            info = fence_match.group(2).strip()
+            fence_lang = info.split()[0] if info else ""
+            fence_char = fence_marker[0]
+            fence_len = len(fence_marker)
+            escaped = re.escape(fence_char)
+            closing = re.compile("^" + escaped + "{" + str(fence_len) + ",}\\s*$")
+            j = i + 1
+            end_char = start_char + len(line)
+            while j < total:
+                close_content = lines[j].strip()
+                if closing.match(close_content):
+                    end_char = offsets[j] + len(lines[j])
+                    j += 1
+                    break
+                j += 1
+            else:
+                j = total
+                end_char = len(ctx.text)
+            blocks.append(
+                DocBlock(
+                    start_char=start_char,
+                    end_char=end_char,
+                    type="fence",
+                    fence_lang=fence_lang or None,
+                )
+            )
+            i = j
+            continue
+
+        # Markdown table (pipe-form)
+        if _TABLE_LINE_RE.match(line):
+            j = i
+            end_char = start_char
+            while j < total and _TABLE_LINE_RE.match(lines[j]):
+                end_char = offsets[j] + len(lines[j])
+                j += 1
+            blocks.append(
+                DocBlock(
+                    start_char=start_char,
+                    end_char=end_char,
+                    type="table",
+                )
+            )
+            i = j
+            continue
+
+        # Paragraph/list/blockquote aggregation
+        block_type = "paragraph"
+        stripped_leading = stripped_line.lstrip()
+        if stripped_leading.startswith(">"):
+            block_type = "blockquote"
+        elif re.match(r"^(?:[*+-]|\d+[.)])\s", stripped_leading):
+            block_type = "list"
+
+        j = i
+        end_char = offsets[j] + len(lines[j])
+        while j + 1 < total:
+            nxt = lines[j + 1]
+            nxt_content = nxt.strip()
+            if not nxt_content:
+                end_char = offsets[j + 1] + len(nxt)
+                j += 1
+                break
+            if _MD_ATX_HEADING_RE.match(nxt_content):
+                break
+            if _FENCE_RE.match(nxt_content):
+                break
+            if _TABLE_LINE_RE.match(nxt):
+                break
+            if j + 1 < total and _MD_SETEXT_RE.match(nxt_content):
+                break
+            if block_type == "blockquote" and not nxt.lstrip().startswith(">"):
+                break
+            end_char = offsets[j + 1] + len(nxt)
+            j += 1
+
+        blocks.append(
+            DocBlock(
+                start_char=start_char,
+                end_char=end_char,
+                type=block_type,
+            )
+        )
+        i = j + 1
+
+    return blocks
+
+
+def _split_block_if_needed(ctx: DocContext, block: DocBlock) -> List[DocBlock]:
+    start_bytes = ctx.char_to_byte[block.start_char]
+    end_bytes = ctx.char_to_byte[block.end_char]
+    total = end_bytes - start_bytes
+    if total <= DOC_HARD_CAP_BYTES or block.type == "heading":
+        return [block]
+
+    newline_positions: List[int] = []
+    segment_text = ctx.text[block.start_char:block.end_char]
+    absolute = block.start_char
+    for ch in segment_text:
+        absolute += 1
+        if ch == "\n":
+            newline_positions.append(absolute)
+    if not newline_positions or newline_positions[-1] != block.end_char:
+        newline_positions.append(block.end_char)
+
+    parts: List[DocBlock] = []
+    cur_start = block.start_char
+    cur_start_bytes = ctx.char_to_byte[cur_start]
+    idx = 0
+    while cur_start < block.end_char:
+        limit = cur_start_bytes + DOC_SOFT_MAX_BYTES
+        chosen_char: Optional[int] = None
+
+        while idx < len(newline_positions):
+            candidate = newline_positions[idx]
+            candidate_bytes = ctx.char_to_byte[candidate]
+            if candidate_bytes - cur_start_bytes > DOC_HARD_CAP_BYTES:
+                break
+            chosen_char = candidate
+            idx += 1
+            if candidate_bytes >= limit:
+                break
+
+        if chosen_char is None:
+            forced_bytes = min(cur_start_bytes + DOC_HARD_CAP_BYTES, ctx.char_to_byte[block.end_char])
+            forced_char = _bytes_to_char(ctx, forced_bytes)
+            if forced_char <= cur_start:
+                forced_char = min(block.end_char, cur_start + 1)
+            chosen_char = forced_char
+
+        if chosen_char <= cur_start:
+            chosen_char = min(block.end_char, cur_start + 1)
+
+        parts.append(_clone_block(block, cur_start, chosen_char))
+        cur_start = chosen_char
+        cur_start_bytes = ctx.char_to_byte[cur_start]
+
+    return parts
+
+
+def _find_requirement_sentences(text: str) -> List[str]:
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    results: List[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        candidate = sentence.strip()
+        if not candidate:
+            continue
+        if _REQUIREMENT_PATTERN.search(candidate) and candidate not in seen:
+            results.append(candidate)
+            seen.add(candidate)
+    return results
+
+
+def _extract_requirement_sentences(ctx: DocContext, start_char: int, end_char: int) -> List[str]:
+    snippet = ctx.text[start_char:end_char]
+    return _find_requirement_sentences(snippet)
+
+
+def _merge_small_segments(ctx: DocContext, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not segments:
+        return segments
+
+    merged: List[Dict[str, Any]] = []
+    for seg in segments:
+        seg_size = ctx.char_to_byte[seg["end_char"]] - ctx.char_to_byte[seg["start_char"]]
+        if merged and seg_size < DOC_MIN_CHUNK_BYTES:
+            prev = merged[-1]
+            prev["blocks"].extend(seg["blocks"])
+            prev["end_char"] = seg["end_char"]
+            prev["block_types"].update(seg["block_types"])
+            prev["fence_langs"].update(seg["fence_langs"])
+        else:
+            merged.append(seg)
+
+    if len(merged) > 1:
+        last = merged[-1]
+        last_size = ctx.char_to_byte[last["end_char"]] - ctx.char_to_byte[last["start_char"]]
+        if last_size < DOC_MIN_CHUNK_BYTES:
+            prev = merged[-2]
+            prev["blocks"].extend(last["blocks"])
+            prev["end_char"] = last["end_char"]
+            prev["block_types"].update(last["block_types"])
+            prev["fence_langs"].update(last["fence_langs"])
+            merged.pop()
+
+    return merged
+
+
+def _segments_to_chunks(
+    ctx: DocContext,
+    contents: bytes,
+    path: str,
+    repo: str,
+    language: str,
+    segments: List[Dict[str, Any]],
+) -> List[Chunk]:
+    chunks: List[Chunk] = []
+    prev_end_bytes: Optional[int] = None
+
+    for seg in segments:
+        start_char = seg["start_char"]
+        end_char = seg["end_char"]
+        start_bytes = ctx.char_to_byte[start_char]
+        end_bytes = ctx.char_to_byte[end_char]
+
+        if prev_end_bytes is not None:
+            overlap_start = max(0, prev_end_bytes - DOC_OVERLAP_BYTES)
+            if overlap_start < start_bytes:
+                start_bytes = overlap_start
+                start_char = _bytes_to_char(ctx, start_bytes)
+
+        chunk_text = ctx.text[start_char:end_char]
+        requirement_sentences = _extract_requirement_sentences(ctx, start_char, end_char)
+        code_refs = {match.strip() for match in _INLINE_CODE_RE.findall(chunk_text) if match.strip()}
+        code_refs.update(f"fence:{lang}" for lang in seg["fence_langs"] if lang)
+
+        block_types = seg["block_types"]
+        chunk_kind = "doc"
+        if "table" in block_types:
+            chunk_kind = "table"
+        elif "fence" in block_types:
+            chunk_kind = "fence"
+        elif "json" in block_types:
+            chunk_kind = "json"
+        elif "yaml" in block_types:
+            chunk_kind = "yaml"
+        elif "toml" in block_types:
+            chunk_kind = "toml"
+        elif "csv" in block_types:
+            chunk_kind = "csv"
+        elif "tsv" in block_types:
+            chunk_kind = "tsv"
+        elif "text" in block_types:
+            chunk_kind = "text"
+        if chunk_kind == "doc" and requirement_sentences:
+            chunk_kind = "req"
+
+        metadata = {
+            "heading_breadcrumb": seg["breadcrumb"],
+            "anchors": seg["anchors"],
+            "requirement_sentences": requirement_sentences,
+            "code_refs": sorted(code_refs),
+            "chunk_kind": chunk_kind,
+            "grammar_version": DOC_GRAMMAR_VERSION,
+            "eol": ctx.eol,
+            "overlap_bytes": DOC_OVERLAP_BYTES,
+        }
+        table_delimiter = seg.get("table_delimiter")
+        if table_delimiter:
+            metadata["table_delimiter"] = table_delimiter
+
+        signature = _document_signature(repo, path, start_bytes, end_bytes, seg["breadcrumb"], chunk_text[:120])
+        chunk = _make_chunk(
+            contents,
+            start_bytes,
+            end_bytes,
+            path,
+            language,
+            repo,
+            signature=signature,
+            metadata=metadata,
+        )
+        chunks.append(chunk)
+        prev_end_bytes = end_bytes
+
+    return chunks
+
+
+def _document_signature(
+    repo: str,
+    path: str,
+    start_bytes: int,
+    end_bytes: int,
+    breadcrumb: List[str],
+    preview: str,
+) -> str:
+    crumb = "/".join(breadcrumb)
+    cleaned_preview = " ".join(preview.strip().split())
+    if len(cleaned_preview) > 80:
+        cleaned_preview = cleaned_preview[:77] + "..."
+    parts: List[str] = []
+    if repo:
+        parts.append(repo)
+    parts.extend([path, f"{start_bytes}-{end_bytes}"])
+    if crumb:
+        parts.append(crumb)
+    if cleaned_preview:
+        parts.append(cleaned_preview)
+    parts.append(DOC_GRAMMAR_VERSION)
+    return "|".join(parts)
+
+
+def _build_doc_context(contents: bytes) -> Optional[DocContext]:
+    try:
+        text = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    char_to_byte: List[int] = [0] * (len(text) + 1)
+    byte_pos = 0
+    for idx, ch in enumerate(text):
+        char_to_byte[idx] = byte_pos
+        byte_pos += len(ch.encode("utf-8"))
+    char_to_byte[len(text)] = byte_pos
+
+    lines = text.splitlines(True)
+    line_offsets: List[int] = []
+    cursor = 0
+    for line in lines:
+        line_offsets.append(cursor)
+        cursor += len(line)
+
+    eol = "\r\n" if "\r\n" in text else "\n"
+    return DocContext(
+        text=text,
+        char_to_byte=char_to_byte,
+        lines=lines,
+        line_char_offsets=line_offsets,
+        total_bytes=len(contents),
+        eol=eol,
+    )
 
 
 def _chunk_code(contents: bytes, path: str, language: str, repo: str) -> Iterable[Chunk]:
@@ -276,7 +1148,11 @@ def _is_top_level_type(n: Node, language: str) -> bool:
     return True
 
 
-from tree_sitter import Query, QueryError, QueryCursor
+from tree_sitter import Query, QueryError
+try:  # Tree-sitter releases prior to 0.22 omit QueryCursor
+    from tree_sitter import QueryCursor  # type: ignore
+except ImportError:  # pragma: no cover - fallback for older runtimes
+    QueryCursor = None  # type: ignore
 
 
 def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
@@ -287,15 +1163,35 @@ def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
         return []
 
     try:
-        lang = get_language(language)  # your existing helper that returns a tree_sitter.Language
+        lang = get_language(language)
         qsrc = "\n".join(s.strip() for s in sexprs if s.strip())
-        query = Query(lang, qsrc)  # raises QueryError on invalid patterns
+        query = Query(lang, qsrc)
     except QueryError:
         return []
 
-    cursor = QueryCursor(query)
-    captures = cursor.captures(root)  # dict: { "cap_name": [Node, ...], ... }
-    nodes = list(captures.get(capture, []))
+    captures_nodes: List[Node] = []
+    if QueryCursor is not None:
+        cursor = QueryCursor()
+        cursor.exec(query, root)
+        for entry in cursor.captures():
+            if isinstance(entry, tuple):
+                node, cap_name = entry[0], entry[1] if len(entry) > 1 else None
+                if cap_name == capture:
+                    captures_nodes.append(node)
+    else:
+        captures = query.captures(root)
+        if isinstance(captures, dict):  # older python bindings return {capture: [nodes]}
+            captures_nodes.extend(captures.get(capture, []))
+        else:
+            for entry in captures:
+                if not isinstance(entry, tuple):
+                    continue
+                node = entry[0]
+                cap_name = entry[1] if len(entry) > 1 else None
+                if cap_name == capture:
+                    captures_nodes.append(node)
+
+    nodes = list(captures_nodes)
 
     # (optional) ensure deterministic order & dedupe by byte range
     nodes.sort(key=lambda n: (n.start_byte, n.end_byte))
@@ -688,13 +1584,32 @@ def _nearest_newline(contents: bytes, target: int, lo: int, hi: int) -> Optional
     return None
 
 
-def _make_chunk(contents: bytes, start: int, end: int, path: str, language: str, repo: str, signature="") -> Chunk:
+def _bytes_to_char(ctx: DocContext, byte_offset: int) -> int:
+    index = bisect.bisect_left(ctx.char_to_byte, byte_offset)
+    if index >= len(ctx.char_to_byte):
+        return len(ctx.char_to_byte) - 1
+    if ctx.char_to_byte[index] > byte_offset and index > 0:
+        return index - 1
+    return index
+
+
+def _make_chunk(
+    contents: bytes,
+    start: int,
+    end: int,
+    path: str,
+    language: str,
+    repo: str,
+    signature: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Chunk:
     """
     Build a Chunk from a byte range, computing row/col positions efficiently.
     """
     start_rc = _byte_to_point(contents, start)
     end_rc = _byte_to_point(contents, end)
     text = contents[start:end].decode("utf-8", errors="replace")
+    meta = metadata or {}
     return Chunk(
         chunk=text,
         repo=repo,
@@ -704,7 +1619,8 @@ def _make_chunk(contents: bytes, start: int, end: int, path: str, language: str,
         end_rc=end_rc,
         start_bytes=start,
         end_bytes=end,
-        signature=signature
+        signature=signature,
+        metadata=meta,
     )
 
 

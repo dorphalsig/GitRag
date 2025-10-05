@@ -1,0 +1,38 @@
+name: "GitRag Indexer"
+description: "Run the GitRag indexing CLI inside GitHub Actions"
+author: "GitRag Maintainers"
+inputs:
+  repo:
+    description: "Repository identifier (namespace/name) stored in index metadata"
+    required: true
+  full_index:
+    description: "Set to true to index all tracked files using --full"
+    required: false
+    default: "false"
+  persistence_adapter:
+    description: "Persistence adapter key (default: cloudflare)"
+    required: false
+    default: "cloudflare"
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Install dependencies
+      shell: bash
+      run: python -m pip install -r requirements.txt
+    - name: Run GitRag indexer
+      shell: bash
+      env:
+        GITRAG_PERSIST_ADAPTER: ${{ inputs.persistence_adapter }}
+      run: |
+        EXTRA_ARGS=""
+        if [ "${{ inputs.full_index }}" = "true" ]; then
+          EXTRA_ARGS="--full"
+        fi
+        python src/Indexer.py "${{ inputs.repo }}" ${EXTRA_ARGS}
+branding:
+  icon: "database"
+  color: "blue"
