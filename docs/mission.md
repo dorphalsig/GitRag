@@ -10,8 +10,8 @@ principles guide implementation and review:
 2. **Source of Truth in Git.** The indexer reads from the working tree and
    persists to external stores, but the canonical project state remains the Git
    repository. The indexer must never mutate repository contents.
-3. **Minimal Operational Load.** Cloudflare Vectorize + D1 are the default
-   persistence targets because they provide built-in free-tier quotas. Adapter
+3. **Minimal Operational Load.** Turso/libSQL is the default persistence target
+   because it delivers SQLite compatibility with hosted durability. Adapter
    hooks exist so other stores can be added without widening the runtime
    dependency surface.
 4. **Sensitive Data Hygiene.** Chunking keeps provenance (path, repo) and

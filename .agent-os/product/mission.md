@@ -2,7 +2,7 @@
 
 ## Pitch
 
-GitRag is a repository indexing pipeline that helps platform and applied AI teams keep GitHub codebases searchable for retrieval-augmented generation workflows by providing AST-aware chunking, incremental sync, and Cloudflare-native persistence.
+GitRag is a repository indexing pipeline that helps platform and applied AI teams keep GitHub codebases searchable for retrieval-augmented generation workflows by providing AST-aware chunking, incremental sync, and libSQL-native persistence.
 
 ## Users
 
@@ -35,16 +35,16 @@ Engineering teams need their latest code and configuration reflected in RAG inde
 
 - Tree-sitter powered AST chunking across code and structured config files with size-aware fallbacks
 - Incremental git-diff driven ingestion that respects rename and binary heuristics
-- Cloudflare Vectorize + D1 persistence workflow designed for zero-secret leakage in CLI orchestration
+- libSQL vector persistence that provisions DiskANN cosine indexes and manages vector blobs without external services
 - Pluggable embedding calculator interface that already supports CodeRankEmbed with minimal runtime footprint
-- Planned FTS-backed keyword postings in D1 to power hybrid (vector + lexical) retrieval alongside the GitRag-Retrieve service
+- Planned FTS-backed keyword postings in libSQL to power hybrid (vector + lexical) retrieval alongside the GitRag-Retrieve service
 
 ## Key Features
 
 - Deterministic chunker that covers multiple languages and structured formats with test coverage
 - CLI orchestrator that resolves commit deltas, filters binaries, and batches persistence operations
 - Extensible embedding calculator powered by SentenceTransformers with configurable model source
-- Persistence layer that prepares Cloudflare Vectorize and D1 schema, executes upserts, and tracks mutation state
+- Persistence layer that provisions libSQL schema (vector blobs + DiskANN index) while handling upserts and mutation tracking
 - Fixture-backed helper library to generate realistic test data for chunking behaviors
 
 ## Use Cases

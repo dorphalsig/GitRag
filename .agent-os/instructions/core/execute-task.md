@@ -226,9 +226,102 @@ Use the test-runner subagent to run and verify only the tests specific to this p
 
 </step>
 
-<step number="7" name="task_status_updates">
+<step number="7" name="alignment_check">
 
-### Step 7: Mark this task and sub-tasks complete
+### Step 7: Alignment Check Against Task Definition
+
+Confirm the implementation matches the parent task and all sub-tasks with no scope creep and no untracked debt.
+
+<alignment_verification>
+  <sources>
+    - tasks.md: parent + sub-task descriptions and acceptance criteria
+    - Relevant sections in technical-spec.md referenced by the task
+    - Commit diff for the task branch
+  </sources>
+  <verify>
+    - Scope: Only what the task defines. No extra features. No silent trade-offs.
+    - Acceptance: Every acceptance criterion demonstrably satisfied, including edge cases.
+    - Tests: Tests exist that map to each criterion and changed behavior.
+    - Coverage: Coverage for touched files is not lower than before.
+    - Docs: tasks.md and technical-spec.md are updated if behavior changed intentionally.
+  </verify>
+  <decisions>
+    - If misaligned: fix the implementation or update the task/spec, not both.
+    - If work is useful but out of scope: open a separate task or debt ticket.
+  </decisions>
+</alignment_verification>
+
+<instructions>
+  ACTION: Compare deliverable vs task record and acceptance criteria.
+  RECORD: Any deltas in tasks.md under the task as “alignment issues”.
+  OUTCOME: Proceed only when alignment issues = 0.
+</instructions>
+
+</step>
+
+<step number="8" subagent="context-fetcher" name="code_review_checklist">
+
+### Step 8: Code Review Checklist (Optional)
+
+Run a checklist review if a checklist file exists.
+
+<checklist_source>
+  <locate>
+    - Preferred: @.agent-os/standards/code-review-checklist.md
+    - Otherwise: a project-specific checklist path referenced by the task/spec
+  </locate>
+  <skip_if>no checklist file is present</skip_if>
+</checklist_source>
+
+<review_scope>
+  <targeted>
+    - Changed files in this task
+    - Directly impacted modules/packages
+  </targeted>
+  <full_review_when>
+    - Public APIs changed
+    - Cross-cutting concerns touched (auth, logging, errors, config)
+    - Build/test infrastructure modified
+    - Large refactors
+  </full_review_when>
+</review_scope>
+
+<run>
+  APPLY the checklist to the chosen scope, including:
+  - Correctness and invariants
+  - Complexity and readability
+  - Naming and API clarity
+  - Error handling and logging
+  - Concurrency and resource safety
+  - Security and data handling
+  - I/O and boundary conditions
+  - Test quality and determinism
+</run>
+
+<re_review_loop>
+  IF any issues found:
+    - Fix issues
+    - Re-run affected tests and static checks for changed/impacted areas
+    - Re-run the checklist for changed areas
+  REPEAT until clean.
+</re_review_loop>
+
+<exit_criteria>
+  - Two consecutive clean passes
+  - Equal or higher coverage vs pre-change baseline
+  - Loop cap: 3 iterations; if still failing or scope is shifting, open a debt ticket and escalate
+</exit_criteria>
+
+<instructions>
+  ACTION: Use test-runner for affected tests; document issues under the task.
+  OUTCOME: Proceed only when the checklist scope is clean or intentionally deferred via a ticket.
+</instructions>
+
+</step>
+
+<step number="9" name="task_status_updates">
+
+### Step 9: Mark this task and sub-tasks complete
 
 IMPORTANT: In the tasks.md file, mark this task and its sub-tasks complete by updating each task checkbox to [x].
 

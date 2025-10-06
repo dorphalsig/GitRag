@@ -1,22 +1,90 @@
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+
+
+if "numpy" not in sys.modules:
+    from array import array
+
+    class _FakeArray(list):
+        def __init__(self, data):
+            super().__init__(data)
+
+        @property
+        def shape(self):
+            return (len(self),)
+
+        def tobytes(self):
+            return array("f", self).tobytes()
+
+    class _FakeMatrix:
+        def __init__(self, rows: int, dim: int):
+            self._rows = [_FakeArray([0.0] * dim) for _ in range(rows)]
+            self.shape = (rows, dim)
+
+        def __getitem__(self, idx):
+            return self._rows[idx]
+
+    def _fake_asarray(data, dtype=None):
+        if isinstance(data, _FakeArray):
+            return data
+        return _FakeArray(list(data))
+
+    fake_np = types.SimpleNamespace(asarray=_fake_asarray, float32="float32")
+    sys.modules["numpy"] = fake_np
+
+if "sentence_transformers" not in sys.modules:
+    class _FakeSentenceTransformer:
+        def __init__(self, repo, trust_remote_code=True, device=None):
+            self._dim = 768
+
+        def encode(self, texts, normalize_embeddings=True):
+            return _FakeMatrix(len(texts), self._dim)
+
+    sys.modules["sentence_transformers"] = types.SimpleNamespace(
+        SentenceTransformer=_FakeSentenceTransformer
+    )
+
+if "chunker" not in sys.modules:
+    sys.modules["chunker"] = types.SimpleNamespace(chunk_file=lambda path, repo: [])
+
+try:
+    import text_detection  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover - optional dependency missing
+    class _StubBinaryDetector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    sys.modules["text_detection"] = types.SimpleNamespace(BinaryDetector=_StubBinaryDetector)
+
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-try:
-    import Indexer  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency missing
-    Indexer = None  # type: ignore
+Indexer = None
+
+
+def _ensure_indexer():
+    global Indexer
+    if Indexer is not None:
+        return
+    import importlib
+
+    try:
+        Indexer = importlib.import_module("Indexer")  # type: ignore
+    except Exception:  # pragma: no cover - dependencies missing
+        Indexer = None  # type: ignore
+
 
 
 class ProcessFilesTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        _ensure_indexer()
         if Indexer is None:
             raise unittest.SkipTest("Indexer dependencies unavailable")
 
@@ -71,6 +139,7 @@ class ProcessFilesTests(unittest.TestCase):
 class FullIndexTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        _ensure_indexer()
         if Indexer is None:
             raise unittest.SkipTest("Indexer dependencies unavailable")
 
@@ -111,23 +180,31 @@ class FullIndexTests(unittest.TestCase):
 class EnvResolutionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        _ensure_indexer()
         if Indexer is None:
             raise unittest.SkipTest("Indexer dependencies unavailable")
 
-    def test_prefers_clouflare_prefixed_envs(self):
+    def test_resolve_libsql_cfg_reads_env(self):
         with mock.patch.dict(
             "os.environ",
             {
-                "CLOUDFLARE_ACCOUNT_ID": "acct",
-                "CLOUDFLARE_VECTORIZE_INDEX": "vec",
-                "CLOUDFLARE_D1_DATABASE_ID": "db",
+                "TURSO_DATABASE_URL": "libsql://example-db",
+                "TURSO_AUTH_TOKEN": "secret",
+                "LIBSQL_TABLE": "chunks_custom",
+                "LIBSQL_FTS_TABLE": "chunks_fts_custom",
             },
             clear=True,
         ):
-            cfg = Indexer._resolve_cf_ids()
-        self.assertEqual(cfg.account_id, "acct")
-        self.assertEqual(cfg.vectorize_index, "vec")
-        self.assertEqual(cfg.d1_database_id, "db")
+            cfg = Indexer._resolve_libsql_cfg()
+        self.assertEqual(cfg.database_url, "libsql://example-db")
+        self.assertEqual(cfg.auth_token, "secret")
+        self.assertEqual(cfg.table, "chunks_custom")
+        self.assertEqual(cfg.resolved_fts_table, "chunks_fts_custom")
+
+    def test_resolve_libsql_cfg_requires_url(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "TURSO_DATABASE_URL"):
+                Indexer._resolve_libsql_cfg()
 
 if __name__ == "__main__":
     unittest.main()

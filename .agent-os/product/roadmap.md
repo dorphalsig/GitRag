@@ -4,7 +4,7 @@
 
 - [x] Tree-sitter powered chunker covering code and structured config formats with fallback strategies
 - [x] Commit-diff aware CLI that batches process/delete actions per repository change set
-- [x] Cloudflare Vectorize + D1 persistence workflow with mutation tracking and schema management
+- [x] libSQL persistence workflow with transactional writes and schema management
 - [x] Pluggable embedding calculator built on CodeRankEmbed via SentenceTransformers
 - [x] Fixture-backed pytest suite validating chunking helpers and grammar configuration
 
@@ -15,19 +15,19 @@
 
 ### Features
 
-- [ ] Smoke-test embeddings and persistence against Cloudflare sandboxes `[M]`
+- [ ] Smoke-test embeddings and persistence against libSQL sandboxes `[M]`
 - [ ] Harden binary detection by consolidating git heuristics and fallbacks `[S]`
 - [ ] Document configuration knobs, env variables, and usage walkthrough in README `[S]`
 - [ ] Add requirement-topic tagging and search so reviewers can surface pricing/compliance specs next to code changes `[M]`
-- [ ] Create and populate D1 FTS virtual table for hybrid keyword retrieval `[M]`
+- [ ] Ensure libSQL FTS tables are populated for hybrid keyword retrieval `[M]`
 - [ ] Add regression tests that query the FTS table for known keywords `[S]`
 
 ### Dependencies
 
-- Cloudflare staging credentials for Vectorize and D1
+- Turso/libSQL staging credentials
 - GitHub repository with representative language mix for validation
 - Curated requirement documents (e.g., pricing policies) for indexing validation
-- Updated D1 schema (FTS table + provisioning scripts)
+- Updated libSQL schema (FTS table + provisioning scripts)
 
 ## Phase 2: Actions & Extensibility
 
@@ -46,7 +46,7 @@
 
 - GitHub Marketplace submission process
 - Candidate alternative vector/database SDKs for adapter examples
-- Requirement-topic metadata emitted by chunker and stored in D1
+- Requirement-topic metadata emitted by chunker and stored in libSQL
 
 ## Phase 3: Scale & Governance
 
