@@ -25,31 +25,26 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 - Test coverage for chunking helpers/docs, language fixtures, CLI processing, binary detection, and persistence stubs.
 - Contributor guide and mission principles published (`CONTRIBUTING.md`, `docs/mission.md`).
 
-### Future Ideas
-- Ship additional persistence adapter examples (e.g., Pinecone/Postgres) using the registry.
-- Publish libSQL provisioning helpers and migration tooling.
-
 ## Feature-by-Feature Summary
-### AST Chunking *(complete, tested)*
+### AST Chunking
 - `src/chunker.py` uses Tree-sitter grammars from `src/grammar_queries.json` to emit logical units (methods, config nodes) with byte-perfect spans.
 - Fallback `_newline_aligned_ranges` ensures coverage when grammars fail, respecting `SOFT_MAX_BYTES`, `HARD_CAP_BYTES`, and overlap constants.
 
-### Embedding *(complete, verified against libSQL runs)*
+### Embedding
 - `Calculators.CodeRankCalculator` loads CodeRankEmbed via SentenceTransformers, normalizes vectors, and exposes dimensionality.
 - Embedding source is overrideable through `CODERANK_MODEL_DIR`.
 
-### Persistence *(complete, verified against libSQL runs)*
+### Persistence
 - `src/Persist.py` stores chunk metadata, embeddings (BLOB), and FTS content inside libSQL via SQLAlchemy.
 - Batches execute within a single transaction per chunk batch; FTS mirrors are refreshed transactionally.
 - `delete_batch` resolves chunk IDs by path and removes rows from both primary and FTS tables.
 
-### Git-aware CLI *(complete, tested)*
+### Git-aware CLI
 - `src/Indexer.py` determines the last commit range, classifies change actions, consolidates binary detection with a shared `BinaryDetector`, and forwards work to the persistence layer.
 - `_process_files` loads chunk data, runs embeddings, and persists in a single batch per invocation.
 
-### Extensibility *(adapter-ready)*
-- Embedding calculators already adhere to `EmbeddingCalculator` protocol.
-- Persistence adapters remain pluggable through `persistence_registry`, with libSQL provided by default.
+### Extensibility
+- You can change the Embedding model by implementing  `EmbeddingCalculator`
 - GitHub Action packaging exposes the CLI as a reusable composite action.
 
 ### Community & Documentation *(complete)*
