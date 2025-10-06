@@ -5,12 +5,13 @@
 # - Python 3.9+ is required by sentence-transformers and tree-sitter-language-pack.
 
 # Core runtime deps
-cloudflare==4.3.1
 numpy==2.1.0
 sentence-transformers==5.1.1
 tree-sitter==0.23.2
 tree-sitter-language-pack==0.9.1
 einops==0.8.0
+SQLAlchemy==2.0.43
+sqlalchemy-libsql==0.2.0
 
 # Dev / tests
 pytest==8.4.2

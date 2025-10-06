@@ -1,28 +1,32 @@
-# Spec: D1 FTS Hybrid Retrieval Support
+# Spec: libSQL Hybrid Retrieval Support
 
 ## Goal
-Introduce a first-class FTS5 table in Cloudflare D1 so downstream retrieval (see `dorphalsig/GitRag-Retrieve`) can blend keyword/BM25 scores with Vectorize embeddings. The indexer must write, update, and delete FTS rows alongside the existing `chunks` table.
+Adopt libSQL as the persistence layer for chunk metadata, embeddings, and full-text postings so downstream retrieval (see `dorphalsig/GitRag-Retrieve`) can run hybrid (vector + lexical) queries without external managed-vector dependencies. The indexer must manage both vector indexes and FTS tables inside libSQL using SQLite-compatible syntax.
 
 ## Requirements
-- Create a virtual table `chunks_fts` (FTS5) mirroring chunk IDs and text content.
-- Ensure DDL lives in `provisioning/d1/` so CI/CD can provision the structure.
-- Write path: when persisting chunks, insert or replace the row in both `chunks` and `chunks_fts`.
-- Delete path: remove rows from both tables for any deleted file IDs.
-- Keep FTS updates within the pending→committed workflow so readers never see half-populated data.
+- Define schema DDL in `provisioning/libsql/` (mirrored for migrations) that creates:
+  - `chunks` table with metadata columns plus `embedding F32_BLOB(768)` storing float32 vectors (dimension derived from `CodeRankCalculator().dimensions`).
+  - `libsql_vector_idx` DiskANN cosine index on `chunks.embedding` for ANN search.
+  - `chunks_fts` FTS5 virtual table mirroring chunk IDs + text for BM25 scoring.
+- Ensure CLI provisioning step applies the libSQL DDL (table + ANN index + FTS).
+- Write path: when persisting chunks, insert or replace corresponding rows in both `chunks` and `chunks_fts`, binding vectors as float32 blobs.
+- Delete path: remove rows from `chunks` and `chunks_fts` when files are removed or chunks are retracted.
+- Keep vector + FTS updates inside the existing pending→committed workflow so downstream readers never observe partial writes.
 - Provide regression tests (unit/integration) that assert:
-  - FTS rows are created with the expected text.
-  - Deletes remove both the canonical and FTS entries.
-  - Queries against `chunks_fts` return results for known keywords in the fixture data.
-- Document how retrieval services should issue hybrid queries (BM25 + Vectorize) in the docs/README.
+  - Vector blobs are stored/read back correctly (shape + dtype) from libSQL.
+  - DiskANN index returns expected nearest neighbors for fixture embeddings.
+  - FTS rows are created and deleted alongside their chunk counterparts.
+  - Hybrid retrieval query examples (FTS match filtered by ANN results) surface known fixture chunks.
+- Document libSQL connection requirements (URL/auth), vector binding format, and ANN/FTS query examples in `docs`.
 
 ## Non-Goals
 - Implementing the retrieval/query service (handled separately in `GitRag-Retrieve`).
-- Ranking logic changes; only data persistence is in scope.
+- Ranking logic changes beyond wiring ANN + FTS results; scoring remains existing blend logic.
 
 ## Risks
-- Double-writing failures could leave FTS and canonical tables inconsistent. Mitigate by keeping operations within the existing pending/committed transaction flow.
-- Large text payloads might inflate D1 size; consider storing normalized text (lowercase, trimmed) instead of raw content if quotas become an issue.
+- Incorrect blob serialization may corrupt vectors; enforce float32 encoding helpers with tests.
+- ANN index rebuild costs could spike on bulk updates; ensure CLI batches updates and avoids frequent full reindexing.
 
 ## Open Questions
-- Do we strip Markdown/HTML tags before inserting into FTS? (Default: store raw chunk text to preserve fidelity; revisit if scoring suffers.)
-- Should we create triggers in D1, or keep logic in the Python client? (Initial implementation will keep logic in the client for portability.)
+- Do we keep chunk embeddings co-located with metadata, or split into a dedicated `embeddings` table for growth? (Default: single `chunks` table with vector column.)
+- Should ANN queries run via SQL helper views or through libSQL SDK primitives? (Initial plan: issue raw SQL to keep portability.)

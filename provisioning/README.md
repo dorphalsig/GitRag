@@ -1,53 +1,17 @@
-# Provisioning Reference
+# libSQL Provisioning
 
-Use these artifacts when preparing Cloudflare resources for GitRag in CI/CD. They mirror the structures enforced by `PersistInVectorize` and can be applied manually or via automation.
+These snippets help bootstrap a libSQL (Turso) deployment for GitRag.
 
-## Cloudflare D1
+## Required Environment
+- `TURSO_DATABASE_URL` — e.g. `libsql://<host>/<db>`
+- `TURSO_AUTH_TOKEN` — JWT for the database.
 
-1. Create a D1 database in the Cloudflare dashboard or via API and note the resulting database identifier (`CLOUDFLARE_D1_DATABASE_ID`).
-2. Apply the schema:
+## Applying Schema
+1. Install `sqlx`, `litecli`, or use `turso` CLI to connect.
+2. Run the statements in [`libsql/schema.sql`](libsql/schema.sql).
+3. Optional: verify tables with `PRAGMA table_info(chunks);` and ensure the FTS
+   table exists via `SELECT name FROM sqlite_master WHERE name='chunks_fts';`.
 
-   ```bash
-   # Example using wrangler (must be authenticated):
-   wrangler d1 execute <DATABASE_NAME> --file provisioning/d1/schema.sql
-   ```
-
-   The schema creates the `chunks` table, secondary indexes (`repo_path`, `language`, `status`), and the `chunks_fts` virtual table (FTS5) used for keyword retrieval.
-
-## Cloudflare Vectorize
-
-1. Create the Vectorize index:
-
-   ```bash
-   curl -X POST \
-     "https://api.cloudflare.com/client/v4/accounts/<CLOUDFLARE_ACCOUNT_ID>/vectorize/indexes" \
-     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-     -H "Content-Type: application/json" \
-     --data @provisioning/vectorize/create-index.json
-   ```
-
-   Replace `<VECTORIZE_INDEX_NAME>` with your desired index name and `<EMBEDDING_DIMENSION>` with the output of `CodeRankCalculator().dimensions` (detected automatically at runtime).
-
-2. Ensure metadata indexes exist for efficient filtering:
-
-   ```bash
-   while read -r line; do
-     NAME=$(echo "$line" | jq -r '.property_name')
-     curl -X POST \
-       "https://api.cloudflare.com/client/v4/accounts/<CLOUDFLARE_ACCOUNT_ID>/vectorize/indexes/<VECTORIZE_INDEX_NAME>/metadata-index" \
-       -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-       -H "Content-Type: application/json" \
-       --data "$line";
-   done < provisioning/vectorize/metadata-indexes.jsonl
-   ```
-
-## Environment Variables
-
-After provisioning, supply these to the GitRag CLI or GitHub Action:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-- `CLOUDFLARE_VECTORIZE_INDEX`
-- `CLOUDFLARE_D1_DATABASE_ID`
-
-Keep this directory up to date if the schema changes.
+## Syncing
+If you point the indexer at a local SQLite file, pass the remote URL/token via
+`sync_url` and `auth_token` (the SQLAlchemy adapter handles this automatically).

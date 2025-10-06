@@ -10,7 +10,7 @@
 - [License](#license)
 
 ## Vision
-GitRag keeps Git and GitHub repositories searchable for retrieval-augmented generation by combining Tree-sitter powered chunking with lightweight embedding and persistence steps that fit within the GitHub Actions free tier. The pipeline focuses on incremental updates, storing metadata and vectors in Cloudflare while keeping raw text in D1 for keyword search.
+GitRag keeps Git and GitHub repositories searchable for retrieval-augmented generation by combining Tree-sitter powered chunking with lightweight embedding and persistence steps that fit within the GitHub Actions free tier. The pipeline focuses on incremental updates, storing metadata, raw text, and embeddings inside libSQL so hybrid vector/keyword search remains fast and fully portable.
 
 Looking for the retrieval/query side? Check out the companion service in `dorphalsig/GitRag-Retrieve` which consumes these indexes for hybrid (vector + keyword) search.
 
@@ -18,30 +18,30 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 ### Already Delivered
 - Deterministic AST + document chunker covering code and structured formats with size-aware fallbacks.
 - Git-aware CLI (`src/Indexer.py`) that inspects the last commit, filters binaries, and batches process/delete operations (includes `--full` initial indexing support).
-- Cloudflare Vectorize + D1 persistence workflow with mutation tracking, schema bootstrapping, and verified end-to-end smoke tests.
+- libSQL persistence workflow with schema bootstrapping, transactional writes, and verified end-to-end smoke tests.
 - SentenceTransformers CodeRankEmbed calculator wired through chunking → embedding → persistence.
 - GitHub Action wrapper (`action.yml`) to run the indexer in CI.
-- Pluggable persistence adapter registry with a Cloudflare implementation shipped out of the box.
+- Pluggable persistence adapter registry with libSQL provided out of the box.
 - Test coverage for chunking helpers/docs, language fixtures, CLI processing, binary detection, and persistence stubs.
 - Contributor guide and mission principles published (`CONTRIBUTING.md`, `docs/mission.md`).
 
 ### Future Ideas
 - Ship additional persistence adapter examples (e.g., Pinecone/Postgres) using the registry.
-- Auto-provision helper scripts for Cloudflare resources.
+- Publish libSQL provisioning helpers and migration tooling.
 
 ## Feature-by-Feature Summary
 ### AST Chunking *(complete, tested)*
 - `src/chunker.py` uses Tree-sitter grammars from `src/grammar_queries.json` to emit logical units (methods, config nodes) with byte-perfect spans.
 - Fallback `_newline_aligned_ranges` ensures coverage when grammars fail, respecting `SOFT_MAX_BYTES`, `HARD_CAP_BYTES`, and overlap constants.
 
-### Embedding *(complete, verified against Cloudflare runs)*
+### Embedding *(complete, verified against libSQL runs)*
 - `Calculators.CodeRankCalculator` loads CodeRankEmbed via SentenceTransformers, normalizes vectors, and exposes dimensionality.
 - Embedding source is overrideable through `CODERANK_MODEL_DIR`.
 
-### Persistence *(complete, verified against Cloudflare runs)*
-- `src/Persist.py` creates the Cloudflare Vectorize index (with metadata indexes) and D1 table (`chunks` with pending/committed status`).
-- Batches are written as NDJSON vectors, waited on via `processed_up_to_mutation`, and then marked committed inside D1.
-- `delete_batch` reads stored IDs and removes vectors + rows.
+### Persistence *(complete, verified against libSQL runs)*
+- `src/Persist.py` stores chunk metadata, embeddings (BLOB), and FTS content inside libSQL via SQLAlchemy.
+- Batches execute within a single transaction per chunk batch; FTS mirrors are refreshed transactionally.
+- `delete_batch` resolves chunk IDs by path and removes rows from both primary and FTS tables.
 
 ### Git-aware CLI *(complete, tested)*
 - `src/Indexer.py` determines the last commit range, classifies change actions, consolidates binary detection with a shared `BinaryDetector`, and forwards work to the persistence layer.
@@ -49,7 +49,7 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 
 ### Extensibility *(adapter-ready)*
 - Embedding calculators already adhere to `EmbeddingCalculator` protocol.
-- Persistence adapters are pluggable via `persistence_registry.register_persistence_adapter(...)`; a Cloudflare implementation ships by default.
+- Persistence adapters remain pluggable through `persistence_registry`, with libSQL provided by default.
 - GitHub Action packaging exposes the CLI as a reusable composite action.
 
 ### Community & Documentation *(complete)*
@@ -58,19 +58,15 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 
 ## Configuration
 ### Environment Variables (Required)
-- `CLOUDFLARE_API_TOKEN` — Cloudflare API token used by the SDK client.
-- `CLOUDFLARE_ACCOUNT_ID` — Account identifier for both Vectorize and D1 resources.
-- `CLOUDFLARE_VECTORIZE_INDEX` — Target Vectorize index name.
-- `CLOUDFLARE_D1_DATABASE_ID` — D1 database identifier that stores chunk metadata and text.
+- `TURSO_DATABASE_URL` — base libSQL endpoint (e.g. `libsql://<host>/<db>`).
+- `TURSO_AUTH_TOKEN` — Turso/libSQL auth token.
 
 ### Environment Variables (Optional)
 - `CODERANK_MODEL_DIR` — Alternate Hugging Face repo or path for the embedding model.
-- `GITRAG_PERSIST_ADAPTER` — Persistence adapter key (defaults to `cloudflare`).
 
 ### CLI Inputs & Flags
-- `python src/Indexer.py <repo>` — positional argument representing the repository identifier stored in Vectorize metadata.
+- `python src/Indexer.py <repo>` — positional argument representing the repository identifier stored alongside chunks.
 - `--full` — index every tracked and unignored text file using the shared binary detector (initial sync).
-- `--adapter` — override the persistence adapter key (defaults to env or `cloudflare`).
 
 ### Heuristics & Knobs
 - Chunk sizing constants: `SOFT_MAX_BYTES=16_384`, `HARD_CAP_BYTES=24_576`, `NEWLINE_WINDOW=2_048`, `FALLBACK_OVERLAP_RATIO≈0.10` (see `src/chunker.py`).
@@ -79,7 +75,7 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 ## Usage
 ### Quickstart
 1. Install dependencies: `pip install -r requirements.txt`.
-2. Export required Cloudflare environment variables.
+2. Export `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
 3. Run `python src/Indexer.py <namespace/repo>` from a Git repository you wish to index. The script inspects the last commit to generate process/delete actions and prints a JSON summary.
 
 ### Full Indexing
@@ -88,7 +84,7 @@ Looking for the retrieval/query side? Check out the companion service in `dorpha
 ### Data Flow
 1. Collect git changes (rename-aware) and filter binary files via `BinaryDetector`.
 2. Chunk files with Tree-sitter and fallbacks; compute embeddings through `CodeRankCalculator`.
-3. Persist chunk metadata/content to Cloudflare D1 and vectors to Cloudflare Vectorize with mutation tracking.
+3. Persist chunk metadata, embeddings, and FTS rows to libSQL inside a single transaction.
 
 ### Supported File Families
 - Code: Kotlin, Java, Dart, Pascal, and others specified in `grammar_queries.json` (`code_extensions`).
@@ -109,19 +105,17 @@ jobs:
           repo: your-org/your-repo
           full_index: true
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_VECTORIZE_INDEX: your-vector-index
-          CLOUDFLARE_D1_DATABASE_ID: your-d1-db
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
 ```
 
 Inputs:
 - `repo` (required) — repository identifier stored with each chunk.
 - `full_index` (optional) — `true` to append `--full` for initial indexing.
-- `persistence_adapter` (optional) — override adapter key; defaults to `cloudflare`.
+- `turso_database_url` / `turso_auth_token` — supplied via workflow `with:` values or repo secrets and forwarded as env vars.
 
 ### Provisioning Helpers
-- Copy-paste D1 schema and Vectorize payloads from the `provisioning/` directory when setting up infrastructure.
+- Apply the statements in `provisioning/libsql/schema.sql` when creating a new database.
 
 ## Development
 ### Tooling
@@ -129,12 +123,12 @@ Inputs:
 - Install dev dependencies via `pip install -r requirements.txt`.
 
 ### Tests
-- Run unit tests with `pytest` (covers chunking helpers, fixtures, binary detection, CLI batching, and persistence stubs). In environments without optional dependencies (Tree-sitter, numpy, sentence-transformers, Cloudflare SDK), fall back to `python3 -m unittest` which skips dependent suites.
+- Run unit tests with `pytest` (covers chunking helpers, fixtures, binary detection, CLI batching, and persistence stubs). In environments without optional dependencies (Tree-sitter, numpy, sentence-transformers, libSQL drivers), fall back to `python3 -m unittest` which skips dependent suites.
 - Fixture helpers in `tests/fixtures.py` generate deterministic inputs; tests auto-create missing sample files.
 
 ### Document Chunking & Metadata
 - Non-code formats (Markdown, JSON/JSONL/NDJSON, YAML/TOML, CSV/TSV, plaintext) use a document-focused chunker with `DOC_GRAMMAR_VERSION=doc-chunker-v1`.
-- Each document chunk now carries metadata persisted to Vectorize: `chunk_kind` (`doc`, `req`, `fence`, `table`, `json`, `yaml`, etc.), `heading_breadcrumb`, slug `anchors`, extracted `requirement_sentences`, inline/code-fence `code_refs`, per-table `table_delimiter`, detected `eol`, and fixed `overlap_bytes` (currently 256).
+- Each document chunk now carries metadata persisted to libSQL: `chunk_kind` (`doc`, `req`, `fence`, `table`, `json`, `yaml`, etc.), `heading_breadcrumb`, slug `anchors`, extracted `requirement_sentences`, inline/code-fence `code_refs`, per-table `table_delimiter`, detected `eol`, and fixed `overlap_bytes` (currently 256).
 - Markdown segmentation tracks headings/code fences to build breadcrumbs and include fence languages in `code_refs`.
 - JSON/TOML/YAML chunking associates top-level keys with breadcrumbs and surfaces requirement sentences from structured text.
 - Plaintext falls back to UTF-8 windows; undecodable files degrade to byte-range chunking with the same metadata schema.
@@ -142,7 +136,7 @@ Inputs:
 ### Key Modules
 - `src/Indexer.py` — CLI orchestrator and git integration.
 - `src/chunker.py` — Chunk slicing logic and Tree-sitter integration.
-- `src/Persist.py` — Cloudflare persistence adapter.
+- `src/Persist.py` — libSQL persistence adapter implemented with SQLAlchemy.
 - `src/text_detection.py` — Shared binary detector used by CLI and upcoming initial indexing flows.
 - `tests/` — Chunker, CLI, and persistence coverage.
 

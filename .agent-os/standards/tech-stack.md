@@ -1,7 +1,8 @@
 # Tech Stack
 
 mcp[cli]
-cloudflare
+SQLAlchemy
+sqlalchemy-libsql
 python-dotenv
 sentence-transformers
 torch>=2.1

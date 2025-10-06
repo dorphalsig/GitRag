@@ -17,8 +17,8 @@ below when proposing changes.
    ```bash
    .venv/bin/python -m pytest -vv
    ```
-   Tests stub optional dependencies (Tree-sitter, Cloudflare SDK) where
-   possible. When touching persistence code, run the optional Cloudflare test by
+   Tests stub optional dependencies (Tree-sitter, libSQL driver) where
+   possible. When touching persistence code, run the live libSQL test by
    providing the `CLOUDFLARE_*` variables.
 
 3. **Linting** is currently handled via CI formatting checks. Please keep

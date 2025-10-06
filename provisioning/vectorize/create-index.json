@@ -1,7 +1,0 @@
-{
-  "name": "<VECTORIZE_INDEX_NAME>",
-  "config": {
-    "dimensions": <EMBEDDING_DIMENSION>,
-    "metric": "cosine"
-  }
-}

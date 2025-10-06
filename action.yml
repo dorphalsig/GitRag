@@ -9,10 +9,12 @@ inputs:
     description: "Set to true to index all tracked files using --full"
     required: false
     default: "false"
-  persistence_adapter:
-    description: "Persistence adapter key (default: cloudflare)"
-    required: false
-    default: "cloudflare"
+  turso_database_url:
+    description: "libSQL database URL (e.g. libsql://...)"
+    required: true
+  turso_auth_token:
+    description: "libSQL auth token"
+    required: true
 runs:
   using: "composite"
   steps:
@@ -26,7 +28,8 @@ runs:
     - name: Run GitRag indexer
       shell: bash
       env:
-        GITRAG_PERSIST_ADAPTER: ${{ inputs.persistence_adapter }}
+        TURSO_DATABASE_URL: ${{ inputs.turso_database_url }}
+        TURSO_AUTH_TOKEN: ${{ inputs.turso_auth_token }}
       run: |
         EXTRA_ARGS=""
         if [ "${{ inputs.full_index }}" = "true" ]; then

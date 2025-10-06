@@ -8,7 +8,7 @@ Indexer.py — lean orchestrator
 - Filters binaries via `git --numstat` / gitattributes
 - PROCESS: chunk -> embed -> persist
 - DELETE: persist.delete_batch(paths)
-- No Cloudflare client details leak from here; Persist handles it
+- Persistence is routed through the libSQL adapter
 - Prints a concise JSON summary to stdout
 """
 from __future__ import annotations
@@ -20,11 +20,7 @@ import os
 import subprocess
 from typing import Dict, Iterable, List, Set, Tuple
 
-from Persist import (
-    PersistConfig,
-    create_persistence_adapter,
-    PersistenceAdapter,
-)
+from Persist import LibsqlConfig, create_persistence_adapter, PersistenceAdapter
 from Calculators.CodeRankCalculator import CodeRankCalculator
 import chunker
 from text_detection import BinaryDetector
@@ -168,37 +164,42 @@ def _list_paths(args: List[str]) -> Set[str]:
     return {line for line in (s.strip() for s in raw.splitlines()) if line}
 
 
+def _resolve_libsql_cfg() -> LibsqlConfig:
+    database_url = _env_value("TURSO_DATABASE_URL")
+    auth_token = _env_value("TURSO_AUTH_TOKEN") or None
+    if not database_url or not auth_token:
+        raise RuntimeError("TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required for libsql adapter")
+    table = _env_value("LIBSQL_TABLE") or "chunks"
+    fts_table = _env_value("LIBSQL_FTS_TABLE") or None
+    return LibsqlConfig(
+        database_url=database_url,
+        auth_token=auth_token,
+        table=table,
+        fts_table=fts_table,
+    )
+
+
 def _env_value(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def _resolve_cf_ids() -> PersistConfig:
-    account_id = _env_value("CLOUDFLARE_ACCOUNT_ID")
-    vectorize_index = _env_value("CLOUDFLARE_VECTORIZE_INDEX")
-    d1_database_id = _env_value("CLOUDFLARE_D1_DATABASE_ID")
-    if not (account_id and vectorize_index and d1_database_id):
-        raise RuntimeError(
-            "Missing Cloudflare env: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_VECTORIZE_INDEX, CLOUDFLARE_D1_DATABASE_ID"
-        )
-    return PersistConfig(
-        account_id=account_id,
-        vectorize_index=vectorize_index,
-        d1_database_id=d1_database_id,
-    )
-
-
-def _load_components(repo: str, adapter_name: str | None = None) -> Tuple[CodeRankCalculator, PersistenceAdapter]:
+def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]:
     """Initialize the embedding calculator and persistence layer.
 
     Raises:
         RuntimeError: when any required env var is missing.
     """
-    cfg = _resolve_cf_ids()
-
     calc = CodeRankCalculator()
-    adapter_key = (adapter_name or os.environ.get("GITRAG_PERSIST_ADAPTER", "cloudflare")).strip() or "cloudflare"
-    persist = create_persistence_adapter(adapter_key, cfg=cfg, dim=calc.dimensions)
-    logger.info("Initialized components for repo=%s (dim=%d, adapter=%s)", repo, calc.dimensions, adapter_key)
+    cfg = _resolve_libsql_cfg()
+    persist = create_persistence_adapter("libsql", cfg=cfg, dim=calc.dimensions)
+    log_target = cfg.database_url
+    logger.info(
+        "Initialized components for repo=%s (dim=%d, adapter=%s, target=%s)",
+        repo,
+        calc.dimensions,
+        "libsql",
+        log_target,
+    )
     return calc, persist
 
 
@@ -246,7 +247,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Process repository changes for indexing.")
     parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
     parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
-    parser.add_argument("--adapter", help="Persistence adapter key (default: cloudflare)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -265,7 +265,7 @@ def main() -> None:
         text_to_proc = _filter_text_files(to_proc, detector=detector)
         skipped_binary = sorted(list(to_proc - text_to_proc))
 
-    calc, persist = _load_components(args.repo, adapter_name=args.adapter)
+    calc, persist = _load_components(args.repo)
 
     deleted_count = 0
     if to_del:
