@@ -5,7 +5,26 @@
     "java": "java",
     "dart": "dart",
     "pas": "pascal",
-    "pp": "pascal"
+    "pp": "pascal",
+    "py": "python",
+    "pyi": "python",
+    "js": "javascript",
+    "jsx": "javascript",
+    "mjs": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "cs": "c_sharp",
+    "go": "go",
+    "rs": "rust",
+    "cpp": "cpp",
+    "cc": "cpp",
+    "cxx": "cpp",
+    "hpp": "cpp",
+    "h": "cpp",
+    "c": "c",
+    "php": "php",
+    "rb": "ruby",
+    "swift": "swift"
   },
   "noncode_ts_grammar": {
     "md": "markdown",
@@ -31,155 +50,133 @@
   },
   "grammar_queries": {
     "Package": {
-      "java": [
-        "(package_declaration) @package"
-      ],
-      "kotlin": [
-        "(package_directive) @package",
-        "(package_header) @package"
-      ],
-      "dart": [
-        "(library_declaration) @package"
-      ],
-      "pascal": [
-        "(program (moduleName) @package)",
-        "(library (moduleName) @package)",
-        "(unit (moduleName) @package)"
-      ]
+      "java": ["(package_declaration) @package"],
+      "kotlin": ["(package_directive) @package", "(package_header) @package"],
+      "dart": ["(library_declaration) @package"],
+      "pascal": ["(program (moduleName) @package)", "(library (moduleName) @package)", "(unit (moduleName) @package)"],
+      "go": ["(package_clause (package_identifier) @package)"],
+      "c_sharp": ["(namespace_declaration name: (_) @package)", "(file_scoped_namespace_declaration name: (_) @package)"],
+      "cpp": ["(namespace_definition name: (namespace_identifier) @package)"],
+      "php": ["(namespace_definition (namespace_name) @package)"],
+      "ruby": ["(module) @package"],
+      "python": [],
+      "javascript": [],
+      "typescript": [],
+      "rust": [],
+      "c": [],
+      "swift": []
     },
     "Type": {
-      "java": [
-        "(class_declaration) @type",
-        "(interface_declaration) @type",
-        "(enum_declaration) @type",
-        "(record_declaration) @type",
-        "(annotation_type_declaration) @type"
-      ],
-      "kotlin": [
-        "(class_declaration) @type",
-        "(object_declaration) @type",
-        "(interface_declaration) @type"
-      ],
-      "dart": [
-        "(class_declaration) @type",
-        "(mixin_declaration) @type",
-        "(extension_declaration) @type",
-        "(enum_declaration) @type"
-      ],
-      "pascal": [
-        "(declClass) @type",
-        "(declIntf) @type",
-        "(declHelper) @type",
-        "(declEnum) @type"
-      ]
-    },
-    "Constructor": {
-      "java": [
-        "(constructor_declaration) @constructor",
-        "(compact_constructor_declaration) @constructor"
-      ],
-      "kotlin": [
-        "(primary_constructor) @constructor",
-        "(secondary_constructor) @constructor"
-      ],
-      "dart": [
-        "(constructor_declaration) @constructor",
-        "(factory_constructor_declaration) @constructor",
-        "(constructor_signature) @constructor"
-      ],
-      "pascal": []
+      "java": ["(class_declaration) @type", "(interface_declaration) @type", "(record_declaration) @type", "(enum_declaration) @type"],
+      "kotlin": ["(class_declaration) @type", "(object_declaration) @type"],
+      "dart": ["(class_definition) @type", "(mixin_declaration) @type"],
+      "pascal": ["(declType) @type"],
+      "python": ["(class_definition) @type"],
+      "javascript": ["(class_declaration) @type"],
+      "typescript": ["(class_declaration) @type", "(interface_declaration) @type"],
+      "c_sharp": ["(class_declaration) @type", "(interface_declaration) @type", "(struct_declaration) @type", "(record_declaration) @type"],
+      "go": ["(type_declaration (type_spec name: (type_identifier) @type))"],
+      "rust": ["(struct_item) @type", "(enum_item) @type", "(trait_item) @type"],
+      "cpp": ["(class_specifier) @type", "(struct_specifier) @type"],
+      "c": ["(struct_specifier) @type"],
+      "php": ["(class_declaration) @type", "(interface_declaration) @type", "(trait_declaration) @type"],
+      "ruby": ["(class) @type"],
+      "swift": ["(class_declaration) @type", "(struct_declaration) @type", "(protocol_declaration) @type"]
     },
     "Method": {
-      "java": [
-        "(method_declaration) @method"
-      ],
-      "kotlin": [
-        "(function_declaration) @method"
-      ],
+      "java": ["(method_declaration) @method", "(constructor_declaration) @method"],
+      "kotlin": ["(function_declaration) @method", "(secondary_constructor) @method"],
       "dart": [
-        "(method_declaration) @method",
+        "(method_declaration) @method", 
+        "(constructor_declaration) @method",
+        "(extension_body (method_declaration) @method) @scope_container"
+      ],
+      "pascal": ["(declProc) @method", "(declFunc) @method"],
+      "python": ["(function_definition) @method"],
+      "javascript": [
+        "(function_declaration) @method",
+        "(method_definition) @method",
+        "(generator_function_declaration) @method",
+        "(variable_declarator value: (arrow_function)) @method"
+      ],
+      "typescript": [
+        "(function_declaration) @method",
+        "(method_definition) @method",
+        "(variable_declarator value: (arrow_function)) @method"
+      ],
+      "c_sharp": ["(method_declaration) @method", "(constructor_declaration) @method"],
+      "go": [
+        "(method_declaration receiver: (parameter_list (parameter_declaration type: (type_identifier) @explicit_scope)) ) @method",
         "(function_declaration) @method"
       ],
-      "pascal": [
-        "(defProc) @method"
+      "rust": [
+        "(impl_item type: (type_identifier) @explicit_scope (declaration_list (function_item) @method))",
+        "(function_item) @method"
+      ],
+      "cpp": [
+        "(function_definition declarator: (function_declarator declarator: (scoped_identifier scope: (type_identifier) @explicit_scope))) @method",
+        "(function_definition declarator: (function_declarator declarator: (scoped_identifier scope: (namespace_identifier) @explicit_scope))) @method",
+        "(function_definition) @method"
+      ],
+      "c": ["(function_definition) @method"],
+      "php": ["(method_declaration) @method", "(function_definition) @method"],
+      "ruby": ["(method) @method", "(singleton_method) @method"],
+      "swift": [
+         "(extension_declaration (type_identifier) @explicit_scope (function_declaration) @method)",
+         "(function_declaration) @method"
       ]
     },
     "Field": {
-      "java": [
-        "(field_declaration) @field",
-        "(constant_declaration) @field"
-      ],
-      "kotlin": [
-        "(property_declaration) @field"
-      ],
-      "dart": [
-        "(field_declaration) @field",
-        "(top_level_variable_declaration) @field"
-      ],
-      "pascal": [
-        "(declField) @field",
-        "(declProp) @field",
-        "(declVar) @field",
-        "(declConst) @field"
-      ]
+      "java": ["(field_declaration) @field"],
+      "kotlin": ["(property_declaration) @field"],
+      "dart": ["(field_declaration) @field"],
+      "pascal": ["(declProp) @field", "(declVar) @field", "(declConst) @field"],
+      "python": ["(expression_statement (assignment)) @field", "(annotated_assignment) @field"],
+      "javascript": ["(field_definition) @field", "(public_field_definition) @field"],
+      "typescript": ["(field_definition) @field", "(public_field_definition) @field"],
+      "c_sharp": ["(field_declaration) @field"],
+      "go": ["(field_declaration) @field"],
+      "rust": ["(field_declaration) @field"],
+      "cpp": ["(field_declaration) @field"],
+      "c": ["(field_declaration) @field"],
+      "php": ["(property_declaration) @field"],
+      "swift": ["(pattern) @field"]
     },
     "Accessor": {
       "java": [],
-      "kotlin": [
-        "(getter) @accessor",
-        "(setter) @accessor",
-        "(property_declaration (getter) @accessor)",
-        "(property_declaration (setter) @accessor)"
-      ],
-      "dart": [],
-      "pascal": []
+      "kotlin": ["(getter) @accessor", "(setter) @accessor"],
+      "dart": ["(getter_signature) @accessor", "(setter_signature) @accessor"],
+      "c_sharp": ["(property_declaration) @accessor", "(indexer_declaration) @accessor"],
+      "python": ["(function_definition (decorator (dotted_name (identifier) @name (#eq? @name \"property\")))) @accessor"],
+      "javascript": ["(pair key: (property_identifier) @name value: (function_expression)) @method"],
+      "ruby": ["(alias) @accessor"]
     },
     "Initializer": {
-      "java": [
-        "(static_initializer) @initializer",
-        "(instance_initializer) @initializer"
-      ],
-      "kotlin": [
-        "(init_declaration) @initializer",
-        "(initializer) @initializer"
-      ],
+      "java": ["(static_initializer) @initializer", "(instance_initializer) @initializer"],
+      "kotlin": ["(init_declaration) @initializer"],
       "dart": [],
-      "pascal": [
-        "(initialization) @initializer",
-        "(finalization) @initializer"
-      ]
+      "pascal": ["(initialization) @initializer", "(finalization) @initializer"],
+      "c_sharp": ["(constructor_declaration) @initializer"],
+      "python": ["(function_definition name: (identifier) @name (#eq? @name \"__init__\")) @initializer"]
     },
     "EnumMember": {
-      "java": [
-        "(enum_constant) @enum_member"
-      ],
-      "kotlin": [
-        "(enum_entry) @enum_member"
-      ],
-      "dart": [
-        "(enum_constant) @enum_member"
-      ],
-      "pascal": [
-        "(declEnumValue) @enum_member"
-      ]
+      "java": ["(enum_constant) @enum_member"],
+      "kotlin": ["(enum_entry) @enum_member"],
+      "dart": ["(enum_constant) @enum_member"],
+      "pascal": ["(declEnumValue) @enum_member"],
+      "c_sharp": ["(enum_member_declaration) @enum_member"],
+      "rust": ["(enum_variant) @enum_member"],
+      "cpp": ["(enumerator) @enum_member"],
+      "swift": ["(enum_case_pattern) @enum_member"]
     },
     "AnnotationElement": {
-      "java": [
-        "(annotation_type_element_declaration) @annotation_element",
-        "(annotation_method_declaration) @annotation_element"
-      ],
-      "kotlin": [],
-      "dart": [],
-      "pascal": []
+      "java": ["(annotation_type_element_declaration) @annotation_element"],
+      "c_sharp": ["(attribute) @annotation_element"],
+      "python": ["(decorator) @annotation_element"],
+      "rust": ["(attribute_item) @annotation_element"]
     },
     "RecordComponent": {
-      "java": [
-        "(record_component) @record_component",
-        "(record_component_list (record_component) @record_component)"
-      ],
-      "kotlin": [],
-      "dart": [],
-      "pascal": []
+      "java": ["(record_component) @record_component"]
     }
   }
 }
