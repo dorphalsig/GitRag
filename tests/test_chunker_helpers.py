@@ -1,5 +1,5 @@
 # Pure-helper tests for:
-#   _newline_aligned_ranges, _nearest_newline, _byte_to_point, _has_blank_line_between
+#   _newline_aligned_ranges, _nearest_newline, LineMapper.byte_to_point, _has_blank_line_between
 # No Tree-sitter needed at runtime; we stub modules only to import chunker.
 
 import json
@@ -73,6 +73,11 @@ chunker = _import_chunker()
 from .fixtures import ensure_fixtures as _ensure_fixtures, load_bytes as _load_bytes
 
 
+def _line_mapper_byte_to_point(data: bytes, index: int) -> tuple[int, int]:
+    """Compute (row, col) using the LineMapper helper."""
+    return chunker.LineMapper(data).byte_to_point(index)
+
+
 # ---------- Assertion mixin -------------------------------------------------------
 class InvariantsMixin(unittest.TestCase):
     def assertCoverageNoGaps(self, ranges, start: int, end: int, overlap: int, hard_cap: int):
@@ -106,7 +111,7 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
         cls.NEWLINE_WINDOW = int(chunker.NEWLINE_WINDOW)
         cls.newline_aligned = staticmethod(chunker._newline_aligned_ranges)
         cls.nearest_newline = staticmethod(chunker._nearest_newline)
-        cls.byte_to_point = staticmethod(chunker._byte_to_point)
+        cls.byte_to_point = staticmethod(_line_mapper_byte_to_point)
         cls.has_blank_line_between = staticmethod(chunker._has_blank_line_between)
         cfg_path = Path(chunker.__file__).with_name("grammar_queries.json")
         with cfg_path.open("r", encoding="utf-8") as handle:
