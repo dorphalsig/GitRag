@@ -1205,6 +1205,76 @@ def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
     return deduped
 
 
+def _query_matches(
+    root: Node,
+    language: str,
+    sexprs: list[str],
+    capture: str,
+) -> List[Tuple[Node, Dict[str, Node]]]:
+    """Return capture-grouped matches keyed by capture name."""
+    if not sexprs:
+        return []
+    try:
+        lang = get_language(language)
+    except QueryError:
+        return []
+
+    matches: List[Tuple[Node, Dict[str, Node]]] = []
+    for qsrc in _query_variants(sexprs, language):
+        try:
+            query = Query(lang, qsrc)
+        except QueryError:
+            continue
+        matches.extend(_collect_query_matches(query, root, capture))
+    return matches
+
+
+def _query_variants(sexprs: list[str], language: str) -> list[str]:
+    """Return query source variants for language-specific node aliases."""
+    qsrc = "\n".join(s.strip() for s in sexprs if s.strip())
+    if language == "cpp" and ("scoped_identifier" in qsrc or "type_identifier" in qsrc):
+        return [
+            qsrc,
+            qsrc.replace("scoped_identifier", "qualified_identifier").replace(
+                "type_identifier", "namespace_identifier"
+            ),
+        ]
+    return [qsrc]
+
+
+def _collect_query_matches(
+    query: Query,
+    root: Node,
+    capture: str,
+) -> List[Tuple[Node, Dict[str, Node]]]:
+    """Collect grouped capture matches from a prepared query."""
+    if QueryCursor is not None and hasattr(QueryCursor, "matches"):
+        cursor = QueryCursor()
+        cursor.exec(query, root)
+        raw_matches = cursor.matches()
+    elif hasattr(query, "matches"):
+        raw_matches = query.matches(root)
+    else:
+        raw_matches = []
+
+    matches: List[Tuple[Node, Dict[str, Node]]] = []
+    for match in raw_matches:
+        captures = getattr(match, "captures", match[1] if isinstance(match, tuple) else match)
+        if isinstance(captures, dict):
+            captures = [(node, name) for name, nodes in captures.items() for node in nodes]
+        grouped: Dict[str, Node] = {}
+        for entry in captures or []:
+            if isinstance(entry, tuple):
+                node = entry[0]
+                cap_name = entry[1] if len(entry) > 1 else None
+                if cap_name:
+                    grouped[cap_name] = node
+        primary = grouped.get(capture)
+        if primary is not None:
+            matches.append((primary, grouped))
+    return matches
+
+
 def _unique_by_span(nodes: List[Node]) -> List[Node]:
     """Deduplicate nodes by (start_byte, end_byte, type)."""
     seen, uniq = set(), []
@@ -1427,21 +1497,37 @@ def _get_package_name(contents: bytes, root: Node, language: str) -> str:
     return name
 
 
-def _fqn_for_node(node: Node, contents: bytes, path: str, language: str, pkg: str) -> str:
+def _fqn_for_node(
+    node: Node,
+    contents: bytes,
+    path: str = "",
+    language: str = "",
+    pkg: str = "",
+    context: Optional[Dict[str, Node]] = None,
+) -> str:
     """
-    Build a best-effort FQDN: package + enclosing types or file stem + name(params),
-    and append '|member|lang' or '|top_level|lang'.
+    Build a best-effort FQDN: package + explicit/enclosing scope + name(params).
+
+    If an explicit scope is provided in context, it overrides parent-walked scopes.
     """
     name = _node_identifier_text(contents, node) or ""
-    encl = _enclosing_types(node, contents)
-    container = "member" if encl else "top_level"
+    explicit_scope = context.get("explicit_scope") if context else None
+    explicit_name = (
+        contents[explicit_scope.start_byte:explicit_scope.end_byte].decode("utf-8", errors="replace")
+        if explicit_scope is not None
+        else ""
+    )
+    encl = [] if explicit_name else _enclosing_types(node, contents)
+    container = "member" if explicit_name or encl else "top_level"
     if not name:
         name = (encl[-1] if encl else Path(path).stem)
     head = contents[node.start_byte:min(node.end_byte, node.start_byte + 512)].decode("utf-8", errors="replace")
     m = re.search(r"\((.*?)\)", head, flags=re.DOTALL)
     params = m.group(1).strip() if m else ""
-    scope = ".".join(encl) if encl else Path(path).stem
+    scope = explicit_name or (".".join(encl) if encl else Path(path).stem)
     base = f"{pkg}.{scope}.{name}" if pkg else f"{scope}.{name}"
+    if not language:
+        return base
     return f"{base}({params})|{container}|{language}"
 
 
