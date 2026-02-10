@@ -1,23 +1,27 @@
 name: "GitRag Indexer"
-description: "Run the GitRag indexing CLI inside GitHub Actions"
-author: "GitRag Maintainers"
+description: "Run the GitRag indexing CLI for libSQL or PostgreSQL"
 inputs:
   repo:
-    description: "Repository identifier (namespace/name) stored in index metadata"
+    description: "Repository identifier (namespace/name)"
+    required: true
+  db_provider:
+    description: "Database provider ('libsql' or 'postgres')"
+    required: false
+    default: "libsql"
+  database_url:
+    description: "Connection URL (Include username for Postgres: postgresql://user@host/db)"
+    required: true
+  db_auth_token:
+    description: "Password or Auth Token"
     required: true
   full_index:
-    description: "Set to true to index all tracked files using --full"
+    description: "Set to true to index all tracked files"
     required: false
     default: "false"
   branch:
-    description: "Optional branch name (e.g. ${{ github.ref_name }})"
+    description: "Branch name"
     required: false
-  turso_database_url:
-    description: "libSQL database URL (e.g. libsql://...)"
-    required: true
-  turso_auth_token:
-    description: "libSQL auth token"
-    required: true
+
 runs:
   using: "composite"
   steps:
@@ -25,23 +29,21 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: "3.11"
+    
     - name: Install dependencies
       shell: bash
-      run: python -m pip install -r requirements.txt
-    - name: Run GitRag indexer
+      run: python -m pip install -r ${{ github.action_path }}/requirements.txt
+
+    - name: Run Indexer
       shell: bash
       env:
-        TURSO_DATABASE_URL: ${{ inputs.turso_database_url }}
-        TURSO_AUTH_TOKEN: ${{ inputs.turso_auth_token }}
+        DB_PROVIDER: ${{ inputs.db_provider }}
+        DATABASE_URL: ${{ inputs.database_url }}
+        DB_AUTH_TOKEN: ${{ inputs.db_auth_token }}
+        PYTHONPATH: ${{ github.action_path }}/packages/core/src
       run: |
-        EXTRA_ARGS=""
-        if [ "${{ inputs.full_index }}" = "true" ]; then
-          EXTRA_ARGS="--full"
-        fi
-        if [ -n "${{ inputs.branch }}" ]; then
-          EXTRA_ARGS="${EXTRA_ARGS} --branch ${{ inputs.branch }}"
-        fi
-        python src/Indexer.py "${{ inputs.repo }}" ${EXTRA_ARGS}
-branding:
-  icon: "database"
-  color: "blue"
+        ARGS=""
+        [ "${{ inputs.full_index }}" = "true" ] && ARGS="--full"
+        [ -n "${{ inputs.branch }}" ] && ARGS="$ARGS --branch ${{ inputs.branch }}"
+        
+        python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS
