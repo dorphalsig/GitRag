@@ -1,0 +1,18 @@
+[project]
+name = "gitrag-monorepo"
+version = "0.1.0"
+description = "GitRag monorepo workspace"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+  "packages/core",
+  "packages/scalekit-sdk",
+  "packages/mcp-server",
+]
+
+[tool.uv.sources]
+gitrag-core = { workspace = true }
+scalekit-sdk = { workspace = true }
+gitrag-mcp-server = { workspace = true }
