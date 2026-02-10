@@ -46,7 +46,7 @@ on:
 
 jobs:
   index:
-    uses: dorphalsig/gitrag/.github/workflows/indexer.yml@master
+    uses: dorphalsig/gitrag/.github/workflows/GitRag.yml@master
     with:
       repo: ${{ github.repository }}
       branch: ${{ github.ref_name }}
