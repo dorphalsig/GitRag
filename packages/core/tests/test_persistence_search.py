@@ -207,3 +207,81 @@ def test_libsql_persist_batch_rejects_missing_embeddings() -> None:
     except ValueError:
         raised = True
     assert raised
+
+
+def test_libsql_search_preserves_fractional_keyword_scores() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    _bootstrap_libsql_schema(engine)
+    cfg = LibsqlConfig.from_parts(database_url="file:memdb5")
+    adapter = PersistInLibsql(cfg=cfg, dim=2, engine=engine)
+
+    rows = [
+        {
+            "repo": "repo",
+            "path": "low.py",
+            "chunk": "low",
+            "language": "python",
+            "start_row": 0,
+            "start_col": 0,
+            "end_row": 0,
+            "end_col": 3,
+            "start_bytes": 0,
+            "end_bytes": 3,
+            "embedding": array("f", [1.0, 0.0]).tobytes(),
+            "keyword_score": 0.1,
+        },
+        {
+            "repo": "repo",
+            "path": "high.py",
+            "chunk": "high",
+            "language": "python",
+            "start_row": 0,
+            "start_col": 0,
+            "end_row": 0,
+            "end_col": 4,
+            "start_bytes": 0,
+            "end_bytes": 4,
+            "embedding": array("f", [1.0, 0.0]).tobytes(),
+            "keyword_score": 0.9,
+        },
+    ]
+
+    with mock.patch.object(adapter, "_keyword_search", return_value=rows):
+        out = adapter.search(query_embedding=[1.0, 0.0], query_text="keyword", limit=1)
+
+    assert [c.path for c in out] == ["high.py"]
+
+
+def test_libsql_keyword_search_uses_fts_table_name_in_bm25() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    _bootstrap_libsql_schema(engine)
+    cfg = LibsqlConfig.from_parts(database_url="file:memdb6")
+    adapter = PersistInLibsql(cfg=cfg, dim=2, engine=engine)
+
+    c1 = _chunk(repo="r", path="k.py", body="needle haystack", vec=[0.0, 1.0])
+    adapter.persist_batch([c1])
+
+    calls: list[str] = []
+    real_connect = engine.connect
+
+    class WrapperConn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, statement, params=None):
+            calls.append(str(statement))
+            return self._conn.execute(statement, params or {})
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._conn.__exit__(exc_type, exc, tb)
+
+    with mock.patch.object(engine, "connect", side_effect=lambda: WrapperConn(real_connect())):
+        rows = adapter._keyword_search(query="needle", limit=5)
+
+    assert rows
+    assert any("bm25(chunks_fts)" in call for call in calls)
+    assert all("bm25(f)" not in call for call in calls)

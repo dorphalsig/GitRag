@@ -164,7 +164,7 @@ class PersistInLibsql(PersistenceAdapter):
 
         scored = []
         for row in keyword_rows:
-            keyword_score = int(row.get("keyword_score") or 0)
+            keyword_score = float(row.get("keyword_score") or 0.0)
             vector_score = self._vector_similarity(query_embedding, row.get("embedding"))
             hybrid_score = (vector_score * 0.7) + (keyword_score * 0.3)
             scored.append((hybrid_score, row))
@@ -230,11 +230,11 @@ class PersistInLibsql(PersistenceAdapter):
     def _keyword_search(self, *, query: str, limit: int) -> List[Dict[str, Any]]:
         select_sql = (
             f"SELECT c.id, c.repo, c.path, c.language, c.start_row, c.start_col, c.end_row, c.end_col, "
-            f"c.start_bytes, c.end_bytes, c.chunk, c.embedding, bm25(f) AS keyword_score "
+            f"c.start_bytes, c.end_bytes, c.chunk, c.embedding, -bm25({self._fts_table}) AS keyword_score "
             f"FROM {self._fts_table} AS f "
             f"JOIN {self._table} AS c ON c.id = f.id "
             f"WHERE f.chunk MATCH :query "
-            f"ORDER BY keyword_score LIMIT :limit"
+            f"ORDER BY bm25({self._fts_table}) ASC LIMIT :limit"
         )
         fallback_sql = (
             f"SELECT id, repo, path, language, start_row, start_col, end_row, end_col, "
