@@ -31,8 +31,8 @@ class StubPersistence:
     def delete_batch(self, paths):
         return None
 
-    def search(self, query_embedding, query_text, limit=10):
-        self.calls.append({"embedding": query_embedding, "query_text": query_text, "limit": limit})
+    def search(self, query_embedding, query_text, limit=10, repo=None, branch=None):
+        self.calls.append({"embedding": query_embedding, "query_text": query_text, "limit": limit, "repo": repo, "branch": branch})
         return list(self._chunks)
 
 

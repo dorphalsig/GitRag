@@ -31,10 +31,10 @@ class FakeChunk:
 
 class FakeRetriever:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int, str | None, str | None]] = []
 
-    def retrieve(self, query: str, *, top_k: int = 10):
-        self.calls.append((query, top_k))
+    def retrieve(self, query: str, *, top_k: int = 10, repo: str | None = None, branch: str | None = None):
+        self.calls.append((query, top_k, repo, branch))
         return [
             FakeChunk(
                 chunk=f"match for {query}",
@@ -113,7 +113,7 @@ def test_search_code_tool_with_authenticated_request(scalekit_env):
     chunks = result.structured_content["result"]
     assert chunks[0]["path"] == "src/main.py"
     assert chunks[0]["embeddings"] is None
-    assert retriever.calls == [("needle", 3)]
+    assert retriever.calls == [("needle", 3, None, None)]
 
 
 def test_search_code_tool_rejects_invalid_token(scalekit_env):
