@@ -1,0 +1,27 @@
+name: Sync Branches (Marketplace)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+    strategy:
+      # Prevent one failure from stopping the others
+      fail-fast: false
+      matrix:
+        target_branch: ['NT'] 
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Merge main into ${{ matrix.target_branch }}
+        uses: devmasx/merge-branch@v1.4.0
+        with:
+          type: now
+          from_branch: main
+          target_branch: ${{ matrix.target_branch }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: 'merge' (default) or 'rebase'
+          message: "chore: merge main into ${{ matrix.target_branch }}"
