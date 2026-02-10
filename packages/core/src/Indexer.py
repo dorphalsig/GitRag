@@ -54,15 +54,18 @@ def _run_git(args: List[str]) -> str:
         raise RuntimeError(f"git {' '.join(args)} failed: {msg}") from e
 
 
-def _resolve_range() -> Tuple[str, str]:
-    """Return (from_ref, to_ref) for the *last* commit, handling the initial commit case."""
+def _resolve_range(from_sha: str | None = None, to_sha: str | None = None) -> Tuple[str, str]:
+    """Return (from_ref, to_ref). Prefer args, fallback to last commit."""
+    if from_sha and to_sha:
+        return from_sha, to_sha
+    
+    # Fallback to checking just the last commit
     try:
         _run_git(["rev-parse", "HEAD^"])
         return "HEAD^", "HEAD"
     except Exception:
         empty_tree = _run_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
         return empty_tree, "HEAD"
-
 
 def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dict[str, str]]]:
     """Summarize file changes in a commit range.
@@ -277,7 +280,7 @@ def main() -> None:
         rng = ("FULL_REBUILD", "HEAD")
         to_del: Set[str] = set()
     else:
-        rng = _resolve_range()
+        rng = _resolve_range(args.from_sha, args.to_sha)
         to_proc, to_del, actions = _collect_changes(rng)
         logger.info("Running in delta mode: %d process candidates, %d deletions", len(to_proc), len(to_del))
         text_to_proc = _filter_text_files(to_proc, detector=detector)
