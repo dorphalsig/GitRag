@@ -128,7 +128,14 @@ class Retriever:
     reranker: Optional[Reranker] = None
     initial_limit: int = 50
 
-    def retrieve(self, query: str, *, top_k: int = 10) -> List[Chunk]:
+    def retrieve(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Chunk]:
         normalized_query = (query or "").strip()
         if not normalized_query:
             return []
@@ -138,6 +145,8 @@ class Retriever:
             query_embedding=query_embedding,
             query_text=normalized_query,
             limit=max(self.initial_limit, top_k),
+            repo=repo,
+            branch=branch,
         )
         if not candidates:
             return []

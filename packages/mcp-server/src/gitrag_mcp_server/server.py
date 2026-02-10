@@ -11,7 +11,14 @@ from fastmcp.server.auth.providers.scalekit import ScalekitProvider
 
 
 class _RetrieverProtocol:
-    def retrieve(self, query: str, *, top_k: int = 10) -> list[Any]: ...
+    def retrieve(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> list[Any]: ...
 
 
 def build_scalekit_provider(
@@ -58,9 +65,14 @@ def create_mcp_server(
     mcp = FastMCP(name="GitRag MCP Server", auth=auth_provider)
 
     @mcp.tool(name="search_code")
-    def search_code(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    def search_code(
+        query: str,
+        top_k: int = 5,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Search indexed code and return top snippets."""
-        chunks = retriever.retrieve(query, top_k=top_k)
+        chunks = retriever.retrieve(query, top_k=top_k, repo=repo, branch=branch)
         output: list[dict[str, Any]] = []
         for chunk in chunks:
             payload = asdict(chunk)
