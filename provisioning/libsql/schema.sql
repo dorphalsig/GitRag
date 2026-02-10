@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS chunks (
   id TEXT PRIMARY KEY,
   repo TEXT NOT NULL,
+  branch TEXT,
   path TEXT NOT NULL,
   language TEXT NOT NULL,
   start_row INTEGER NOT NULL,
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS chunks_repo_idx ON chunks (repo);
+CREATE INDEX IF NOT EXISTS chunks_repo_branch_idx ON chunks (repo, branch);
 CREATE INDEX IF NOT EXISTS chunks_path_idx ON chunks (path);
 CREATE INDEX IF NOT EXISTS chunks_repo_path_idx ON chunks (repo, path);
 

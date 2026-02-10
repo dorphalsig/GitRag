@@ -30,7 +30,14 @@ class PersistenceAdapter(Protocol):
 
     def delete_batch(self, paths: List[str]) -> None: ...
 
-    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]: ...
+    def search(
+        self,
+        query_embedding: List[float],
+        query_text: str,
+        limit: int = 10,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Chunk]: ...
 
 
 @dataclass(frozen=True)
@@ -155,10 +162,22 @@ class PersistInLibsql(PersistenceAdapter):
             if callable(dispose):  # pragma: no branch - defensive
                 dispose()
 
-    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]:
+    def search(
+        self,
+        query_embedding: List[float],
+        query_text: str,
+        limit: int = 10,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
         query = (query_text or "").strip()
-        keyword_rows = self._keyword_search(query=query, limit=normalized_limit * 5)
+        keyword_rows = self._keyword_search(
+            query=query,
+            limit=normalized_limit * 5,
+            repo=repo,
+            branch=branch,
+        )
         if not keyword_rows:
             return []
 
@@ -178,6 +197,7 @@ class PersistInLibsql(PersistenceAdapter):
         return {
             "id": chunk.id(),
             "repo": chunk.repo,
+            "branch": chunk.branch,
             "path": chunk.path,
             "language": chunk.language,
             "start_row": start_row,
@@ -195,10 +215,10 @@ class PersistInLibsql(PersistenceAdapter):
     @property
     def _upsert_sql(self) -> str:
         return (
-            f"INSERT INTO {self._table} (id, repo, path, language, start_row, start_col, end_row, end_col, "
+            f"INSERT INTO {self._table} (id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
             "start_bytes, end_bytes, chunk, status, mutation_id, embedding) "
-            "VALUES (:id, :repo, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :embedding) "
-            "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, path=excluded.path, language=excluded.language, "
+            "VALUES (:id, :repo, :branch, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :embedding) "
+            "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch, path=excluded.path, language=excluded.language, "
             "start_row=excluded.start_row, start_col=excluded.start_col, end_row=excluded.end_row, end_col=excluded.end_col, "
             "start_bytes=excluded.start_bytes, end_bytes=excluded.end_bytes, chunk=excluded.chunk, status=excluded.status, "
             "mutation_id=excluded.mutation_id, embedding=excluded.embedding"
@@ -227,9 +247,16 @@ class PersistInLibsql(PersistenceAdapter):
             connect_args=connect_args,
         )
 
-    def _keyword_search(self, *, query: str, limit: int) -> List[Dict[str, Any]]:
+    def _keyword_search(
+        self,
+        *,
+        query: str,
+        limit: int,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Dict[str, Any]]:
         select_sql = (
-            f"SELECT c.id, c.repo, c.path, c.language, c.start_row, c.start_col, c.end_row, c.end_col, "
+            f"SELECT c.id, c.repo, c.branch, c.path, c.language, c.start_row, c.start_col, c.end_row, c.end_col, "
             f"c.start_bytes, c.end_bytes, c.chunk, c.embedding, -bm25({self._fts_table}) AS keyword_score "
             f"FROM {self._fts_table} AS f "
             f"JOIN {self._table} AS c ON c.id = f.id "
@@ -237,7 +264,7 @@ class PersistInLibsql(PersistenceAdapter):
             f"ORDER BY bm25({self._fts_table}) ASC LIMIT :limit"
         )
         fallback_sql = (
-            f"SELECT id, repo, path, language, start_row, start_col, end_row, end_col, "
+            f"SELECT id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
             f"start_bytes, end_bytes, chunk, embedding, "
             f"CASE WHEN lower(chunk) LIKE lower(:term) THEN 1 ELSE 0 END AS keyword_score "
             f"FROM {self._table} "
@@ -245,17 +272,45 @@ class PersistInLibsql(PersistenceAdapter):
             f"ORDER BY keyword_score DESC LIMIT :limit"
         )
 
+        where_filters = []
+        params: Dict[str, Any] = {"limit": limit}
+        if repo is not None:
+            where_filters.append("c.repo = :repo")
+            params["repo"] = repo
+        if branch is not None:
+            where_filters.append("c.branch = :branch")
+            params["branch"] = branch
+
+        fts_where = ""
+        if where_filters:
+            fts_where = " AND " + " AND ".join(where_filters)
+
+        fallback_filters = []
+        fallback_params: Dict[str, Any] = {"limit": limit}
+        if repo is not None:
+            fallback_filters.append("repo = :repo")
+            fallback_params["repo"] = repo
+        if branch is not None:
+            fallback_filters.append("branch = :branch")
+            fallback_params["branch"] = branch
+
+        fallback_where = ""
+        if fallback_filters:
+            fallback_where = " AND " + " AND ".join(fallback_filters)
+
         with self._engine.connect() as conn:
             if query:
                 try:
-                    rows = conn.execute(text(select_sql), {"query": query, "limit": limit}).mappings().all()
+                    fts_sql = select_sql.replace("WHERE f.chunk MATCH :query ", f"WHERE f.chunk MATCH :query{fts_where} ")
+                    rows = conn.execute(text(fts_sql), {**params, "query": query}).mappings().all()
                     if rows:
                         return [dict(row) for row in rows]
                 except Exception:
                     logger.debug("FTS query unavailable, falling back to LIKE", exc_info=True)
 
             term = f"%{query}%" if query else "%"
-            rows = conn.execute(text(fallback_sql), {"term": term, "limit": limit}).mappings().all()
+            like_sql = fallback_sql.replace("WHERE lower(chunk) LIKE lower(:term) ", f"WHERE lower(chunk) LIKE lower(:term){fallback_where} ")
+            rows = conn.execute(text(like_sql), {**fallback_params, "term": term}).mappings().all()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -282,6 +337,7 @@ class PersistInLibsql(PersistenceAdapter):
         return Chunk(
             chunk=chunk_text,
             repo=row.get("repo") or "",
+            branch=row.get("branch"),
             path=row.get("path") or "",
             language=row.get("language") or "unknown",
             start_rc=(int(row.get("start_row") or 0), int(row.get("start_col") or 0)),

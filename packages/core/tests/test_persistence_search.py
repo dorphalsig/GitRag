@@ -32,6 +32,7 @@ def _bootstrap_libsql_schema(engine) -> None:
             CREATE TABLE chunks (
               id TEXT PRIMARY KEY,
               repo TEXT NOT NULL,
+              branch TEXT,
               path TEXT NOT NULL,
               language TEXT NOT NULL,
               start_row INTEGER NOT NULL,

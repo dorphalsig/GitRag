@@ -57,6 +57,7 @@ class PersistInPostgres(PersistenceAdapter):
               id TEXT PRIMARY KEY,
               path TEXT NOT NULL,
               repo TEXT NOT NULL,
+              branch TEXT,
               chunk TEXT NOT NULL,
               embedding vector({self._dim}) NOT NULL,
               search_vector tsvector
@@ -71,9 +72,9 @@ class PersistInPostgres(PersistenceAdapter):
     @property
     def _upsert_sql(self) -> str:
         return (
-            f"INSERT INTO {self._table} (id, path, repo, chunk, embedding, search_vector) "
-            "VALUES (:id, :path, :repo, :chunk, :embedding, to_tsvector('english', :chunk)) "
-            "ON CONFLICT(id) DO UPDATE SET path=excluded.path, repo=excluded.repo, chunk=excluded.chunk, "
+            f"INSERT INTO {self._table} (id, path, repo, branch, chunk, embedding, search_vector) "
+            "VALUES (:id, :path, :repo, :branch, :chunk, :embedding, to_tsvector('english', :chunk)) "
+            "ON CONFLICT(id) DO UPDATE SET path=excluded.path, repo=excluded.repo, branch=excluded.branch, chunk=excluded.chunk, "
             "embedding=excluded.embedding, search_vector=excluded.search_vector"
         )
 
@@ -93,6 +94,7 @@ class PersistInPostgres(PersistenceAdapter):
                         "id": chunk.id(),
                         "path": chunk.path,
                         "repo": chunk.repo,
+                        "branch": chunk.branch,
                         "chunk": chunk.chunk,
                         "embedding": self._decode_embedding(chunk.embeddings),
                     },
@@ -107,14 +109,36 @@ class PersistInPostgres(PersistenceAdapter):
         with self._engine.begin() as conn:
             conn.execute(delete_stmt, {"paths": tuple(paths)})
 
-    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]:
+    def search(
+        self,
+        query_embedding: List[float],
+        query_text: str,
+        limit: int = 10,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
+        filters = [":query_text = '' OR search_vector @@ websearch_to_tsquery('english', :query_text)"]
+        params: Dict[str, Any] = {
+            "query_text": (query_text or "").strip(),
+            "query_embedding": query_embedding,
+            "limit": normalized_limit,
+        }
+        if repo is not None:
+            filters.append("repo = :repo")
+            params["repo"] = repo
+        if branch is not None:
+            filters.append("branch = :branch")
+            params["branch"] = branch
+
+        where_clause = " AND ".join(f"({flt})" for flt in filters)
         sql = text(
             f"""
             SELECT
                 id,
                 path,
                 repo,
+                branch,
                 chunk,
                 embedding,
                 ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) AS keyword_rank,
@@ -122,21 +146,14 @@ class PersistInPostgres(PersistenceAdapter):
                 ((1 - (embedding <=> :query_embedding)) * 0.7 +
                  ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) * 0.3) AS hybrid_rank
             FROM {self._table}
-            WHERE (:query_text = '' OR search_vector @@ websearch_to_tsquery('english', :query_text))
+            WHERE {where_clause}
             ORDER BY hybrid_rank DESC
             LIMIT :limit
             """
         ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
 
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sql,
-                {
-                    "query_text": (query_text or "").strip(),
-                    "query_embedding": query_embedding,
-                    "limit": normalized_limit,
-                },
-            ).mappings().all()
+            rows = conn.execute(sql, params).mappings().all()
         return [self._row_to_chunk(dict(row)) for row in rows]
 
     def _decode_embedding(self, raw: bytes) -> List[float]:
@@ -156,6 +173,7 @@ class PersistInPostgres(PersistenceAdapter):
         return Chunk(
             chunk=text_value,
             repo=row.get("repo") or "",
+            branch=row.get("branch"),
             path=row.get("path") or "",
             language="unknown",
             start_rc=(0, 0),
