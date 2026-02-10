@@ -5,6 +5,9 @@ on:
     branches: [ "**" ] # Trigger on all branch pushes
   workflow_dispatch:   # Allow manual triggering
 
+concurrency:
+  group: gitrag-index-${{ inputs.repo }}-${{ inputs.branch }}
+  cancel-in-progress: false
 jobs:
   index-repo:
     runs-on: ubuntu-latest
