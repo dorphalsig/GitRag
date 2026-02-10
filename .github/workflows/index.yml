@@ -23,7 +23,7 @@ jobs:
 
       - name: Run GitRag Indexer
         # Replace 'main' with the specific branch/tag of GitRag you want to use
-        uses: dorphalsig/gitrag@main 
+        uses: dorphalsig/gitrag@master 
         with:
           repo: ${{ github.repository }}
           branch: ${{ github.ref_name }}
