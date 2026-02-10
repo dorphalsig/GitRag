@@ -15,12 +15,14 @@ class Chunk:
     end_rc: tuple[int, int]
     start_bytes: int
     end_bytes: int
+    branch: str | None = None
     signature: str = ""
     embeddings: Optional[bytes] = field(default=None, compare=False, repr=False)
     metadata: Dict[str, Any] = field(default_factory=dict, compare=False)
 
     def id(self):
-        id = f"{self.repo}::{self.path}::{self.start_bytes}::{self.end_bytes}"
+        branch = self.branch or ""
+        id = f"{self.repo}::{branch}::{self.path}::{self.start_bytes}::{self.end_bytes}"
         return hashlib.sha256(id.encode()).hexdigest()
 
     def calculate_embeddings(self, calculator: EmbeddingCalculator) -> None:
