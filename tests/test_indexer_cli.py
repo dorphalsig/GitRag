@@ -184,7 +184,7 @@ class EnvResolutionTests(unittest.TestCase):
         if Indexer is None:
             raise unittest.SkipTest("Indexer dependencies unavailable")
 
-    def test_resolve_libsql_cfg_reads_env(self):
+    def test_resolve_db_cfg_reads_legacy_libsql_env(self):
         with mock.patch.dict(
             "os.environ",
             {
@@ -195,16 +195,17 @@ class EnvResolutionTests(unittest.TestCase):
             },
             clear=True,
         ):
-            cfg = Indexer._resolve_libsql_cfg()
-        self.assertEqual(cfg.database_url, "libsql://example-db")
+            cfg = Indexer._resolve_db_cfg()
+        self.assertEqual(cfg.url, "libsql://example-db")
+        self.assertEqual(cfg.provider, "libsql")
         self.assertEqual(cfg.auth_token, "secret")
         self.assertEqual(cfg.table, "chunks_custom")
         self.assertEqual(cfg.resolved_fts_table, "chunks_fts_custom")
 
-    def test_resolve_libsql_cfg_requires_url(self):
+    def test_resolve_db_cfg_requires_url(self):
         with mock.patch.dict("os.environ", {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "TURSO_DATABASE_URL"):
-                Indexer._resolve_libsql_cfg()
+            with self.assertRaisesRegex(RuntimeError, "DATABASE_URL"):
+                Indexer._resolve_db_cfg()
 
 if __name__ == "__main__":
     unittest.main()

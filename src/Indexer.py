@@ -20,7 +20,7 @@ import os
 import subprocess
 from typing import Dict, Iterable, List, Set, Tuple
 
-from Persist import LibsqlConfig, create_persistence_adapter, PersistenceAdapter
+from Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
 from Calculators.CodeRankCalculator import CodeRankCalculator
 import chunker
 from text_detection import BinaryDetector
@@ -164,19 +164,29 @@ def _list_paths(args: List[str]) -> Set[str]:
     return {line for line in (s.strip() for s in raw.splitlines()) if line}
 
 
-def _resolve_libsql_cfg() -> LibsqlConfig:
-    database_url = _env_value("TURSO_DATABASE_URL")
-    auth_token = _env_value("TURSO_AUTH_TOKEN") or None
-    if not database_url or not auth_token:
-        raise RuntimeError("TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required for libsql adapter")
-    table = _env_value("LIBSQL_TABLE") or "chunks"
-    fts_table = _env_value("LIBSQL_FTS_TABLE") or None
-    return LibsqlConfig(
-        database_url=database_url,
-        auth_token=auth_token,
-        table=table,
-        fts_table=fts_table,
-    )
+def _resolve_db_cfg() -> DBConfig:
+    provider = (_env_value("DB_PROVIDER") or "libsql").lower()
+    database_url = _env_value("DATABASE_URL")
+    if not database_url and provider == "libsql":
+        database_url = _env_value("TURSO_DATABASE_URL")
+
+    if not database_url:
+        if provider == "libsql":
+            raise RuntimeError("DATABASE_URL (or TURSO_DATABASE_URL for libsql) is required")
+        raise RuntimeError(f"DATABASE_URL is required for provider '{provider}'")
+
+    auth_token = _env_value("DB_AUTH_TOKEN") or _env_value("TURSO_AUTH_TOKEN") or None
+    if provider == "libsql":
+        table = _env_value("LIBSQL_TABLE") or "chunks"
+        fts_table = _env_value("LIBSQL_FTS_TABLE") or None
+        return LibsqlConfig.from_parts(
+            database_url=database_url,
+            auth_token=auth_token,
+            table=table,
+            fts_table=fts_table,
+        )
+
+    return DBConfig(provider=provider, url=database_url, auth_token=auth_token, table_map={})
 
 
 def _env_value(name: str) -> str:
@@ -190,14 +200,14 @@ def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]
         RuntimeError: when any required env var is missing.
     """
     calc = CodeRankCalculator()
-    cfg = _resolve_libsql_cfg()
-    persist = create_persistence_adapter("libsql", cfg=cfg, dim=calc.dimensions)
-    log_target = cfg.database_url
+    cfg = _resolve_db_cfg()
+    persist = create_persistence_adapter(cfg.provider, cfg=cfg, dim=calc.dimensions)
+    log_target = cfg.url
     logger.info(
         "Initialized components for repo=%s (dim=%d, adapter=%s, target=%s)",
         repo,
         calc.dimensions,
-        "libsql",
+        cfg.provider,
         log_target,
     )
     return calc, persist

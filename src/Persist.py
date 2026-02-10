@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
 try:  # pragma: no cover - dependency guard for tooling envs
@@ -30,11 +30,46 @@ class PersistenceAdapter(Protocol):
 
 
 @dataclass(frozen=True)
-class LibsqlConfig:
-    database_url: str
+class DBConfig:
+    provider: str
+    url: str
     auth_token: Optional[str] = None
-    table: str = "chunks"
-    fts_table: Optional[str] = None
+    table_map: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LibsqlConfig(DBConfig):
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        database_url: str,
+        auth_token: Optional[str] = None,
+        table: str = "chunks",
+        fts_table: Optional[str] = None,
+    ) -> "LibsqlConfig":
+        resolved_fts = fts_table or f"{table}_fts"
+        return cls(
+            provider="libsql",
+            url=database_url,
+            auth_token=auth_token,
+            table_map={
+                "chunks": table,
+                "chunks_fts": resolved_fts,
+            },
+        )
+
+    @property
+    def database_url(self) -> str:
+        return self.url
+
+    @property
+    def table(self) -> str:
+        return self.table_map.get("chunks", "chunks")
+
+    @property
+    def fts_table(self) -> Optional[str]:
+        return self.table_map.get("chunks_fts")
 
     @property
     def resolved_fts_table(self) -> str:
@@ -47,7 +82,7 @@ class PersistInLibsql(PersistenceAdapter):
     def __init__(
         self,
         *,
-        cfg: LibsqlConfig,
+        cfg: DBConfig,
         dim: int,
         engine: Optional[Engine] = None,
         engine_factory: Optional[Callable[[], Engine]] = None,
@@ -55,12 +90,12 @@ class PersistInLibsql(PersistenceAdapter):
     ) -> None:
         if SQLALCHEMY_IMPORT_ERROR is not None:
             raise RuntimeError("SQLAlchemy is required for libsql persistence") from SQLALCHEMY_IMPORT_ERROR
-        if not isinstance(cfg, LibsqlConfig):
-            raise TypeError("cfg must be LibsqlConfig")
+        if cfg.provider != "libsql":
+            raise TypeError("cfg.provider must be 'libsql' for PersistInLibsql")
         self._cfg = cfg
         self._dim = dim
-        self._table = cfg.table
-        self._fts_table = cfg.resolved_fts_table
+        self._table = cfg.table_map.get("chunks", "chunks")
+        self._fts_table = cfg.table_map.get("chunks_fts", f"{self._table}_fts")
         if engine is not None:
             self._engine = engine
             self._owns_engine = False
@@ -161,7 +196,7 @@ class PersistInLibsql(PersistenceAdapter):
             raise RuntimeError("SQLAlchemy is required for libsql persistence")
         if create_engine is None:
             raise RuntimeError("SQLAlchemy is required for libsql persistence")
-        url = self._cfg.database_url.rstrip("?")
+        url = self._cfg.url.rstrip("?")
         connect_args: Dict[str, Any] = {}
         if self._cfg.auth_token:
             connect_args["auth_token"] = self._cfg.auth_token
@@ -174,7 +209,7 @@ class PersistInLibsql(PersistenceAdapter):
 
 def _libsql_factory(
     *,
-    cfg: LibsqlConfig,
+    cfg: DBConfig,
     dim: int,
     engine: Optional[Engine] = None,
     engine_factory: Optional[Callable[[], Engine]] = None,
@@ -191,11 +226,14 @@ def _libsql_factory(
 
 register_persistence_adapter("libsql", _libsql_factory)
 
+# Import side-effect: registers the postgres adapter.
+import PersistPostgres  # noqa: F401
+
 
 def create_persistence_adapter(
     adapter: str,
     *,
-    cfg: LibsqlConfig,
+    cfg: DBConfig,
     dim: int,
     **kwargs: Any,
 ) -> PersistenceAdapter:
@@ -207,6 +245,7 @@ def create_persistence_adapter(
 
 
 __all__ = [
+    "DBConfig",
     "LibsqlConfig",
     "PersistInLibsql",
     "PersistenceAdapter",
