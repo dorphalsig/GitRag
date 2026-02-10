@@ -16,6 +16,9 @@ sqlalchemy-libsql==0.2.0
 psycopg2-binary==2.9.11
 pgvector==0.4.2
 # Dev / tests
+# CPU-only baseline: do not add flash_attn or other GPU-only attention dependencies here.
 pytest==8.4.2
 coverage==7.13.4
 pytest-cov==7.0.0
+fastmcp==2.14.5
+uvicorn==0.40.0

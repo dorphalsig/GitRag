@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import math
+from array import array
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
@@ -27,6 +29,8 @@ class PersistenceAdapter(Protocol):
     def persist_batch(self, chunks: Sequence[Chunk]) -> None: ...
 
     def delete_batch(self, paths: List[str]) -> None: ...
+
+    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]: ...
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,23 @@ class PersistInLibsql(PersistenceAdapter):
             if callable(dispose):  # pragma: no branch - defensive
                 dispose()
 
+    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]:
+        normalized_limit = max(1, int(limit))
+        query = (query_text or "").strip()
+        keyword_rows = self._keyword_search(query=query, limit=normalized_limit * 5)
+        if not keyword_rows:
+            return []
+
+        scored = []
+        for row in keyword_rows:
+            keyword_relevance = self._keyword_relevance(row.get("keyword_score"))
+            vector_score = self._vector_similarity(query_embedding, row.get("embedding"))
+            hybrid_score = (vector_score * 0.7) + (keyword_relevance * 0.3)
+            scored.append((hybrid_score, row))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [self._row_to_chunk(row) for _, row in scored[:normalized_limit]]
+
     def _chunk_params(self, chunk: Chunk) -> Dict[str, Any]:
         start_row, start_col = chunk.start_rc
         end_row, end_col = chunk.end_rc
@@ -204,6 +225,92 @@ class PersistInLibsql(PersistenceAdapter):
             f"sqlite+{url}?secure=true",
             future=True,
             connect_args=connect_args,
+        )
+
+    def _keyword_search(self, *, query: str, limit: int) -> List[Dict[str, Any]]:
+        select_sql = (
+            f"SELECT c.id, c.repo, c.path, c.language, c.start_row, c.start_col, c.end_row, c.end_col, "
+            f"c.start_bytes, c.end_bytes, c.chunk, c.embedding, bm25(f) AS keyword_score "
+            f"FROM {self._fts_table} AS f "
+            f"JOIN {self._table} AS c ON c.id = f.id "
+            f"WHERE f.chunk MATCH :query "
+            f"ORDER BY keyword_score LIMIT :limit"
+        )
+        fallback_sql = (
+            f"SELECT id, repo, path, language, start_row, start_col, end_row, end_col, "
+            f"start_bytes, end_bytes, chunk, embedding, "
+            f"CASE WHEN lower(chunk) LIKE lower(:term) THEN 1 ELSE 0 END AS keyword_score "
+            f"FROM {self._table} "
+            f"WHERE lower(chunk) LIKE lower(:term) "
+            f"ORDER BY keyword_score DESC LIMIT :limit"
+        )
+
+        with self._engine.connect() as conn:
+            if query:
+                try:
+                    rows = conn.execute(text(select_sql), {"query": query, "limit": limit}).mappings().all()
+                    if rows:
+                        return [dict(row) for row in rows]
+                except Exception:
+                    logger.debug("FTS query unavailable, falling back to LIKE", exc_info=True)
+
+            term = f"%{query}%" if query else "%"
+            rows = conn.execute(text(fallback_sql), {"term": term, "limit": limit}).mappings().all()
+        return [dict(row) for row in rows]
+
+
+    @staticmethod
+    def _keyword_relevance(raw_keyword_score: Any) -> float:
+        """Normalize lexical score so higher is always better.
+
+        FTS5 bm25 returns lower-is-better scores (often negative), while fallback
+        LIKE search returns 0/1 score where higher is better.
+        """
+        if raw_keyword_score is None:
+            return 0.0
+        try:
+            score = float(raw_keyword_score)
+        except (TypeError, ValueError):
+            return 0.0
+
+        # FTS bm25-style scores can be negative; flip sign so better match is larger.
+        if score < 0:
+            return -score
+
+        # For non-negative distance-like scores, keep inverse monotonic relevance.
+        return 1.0 / (1.0 + score)
+
+    @staticmethod
+    def _vector_similarity(query_embedding: List[float], raw_embedding: Any) -> float:
+        if not query_embedding or raw_embedding is None:
+            return 0.0
+        vals = array("f")
+        vals.frombytes(bytes(raw_embedding))
+        if not vals:
+            return 0.0
+        q = query_embedding[: len(vals)]
+        if not q:
+            return 0.0
+        dot = sum(a * b for a, b in zip(q, vals))
+        q_norm = math.sqrt(sum(a * a for a in q))
+        v_norm = math.sqrt(sum(b * b for b in vals[: len(q)]))
+        if q_norm == 0 or v_norm == 0:
+            return 0.0
+        return dot / (q_norm * v_norm)
+
+    @staticmethod
+    def _row_to_chunk(row: Dict[str, Any]) -> Chunk:
+        chunk_text = row.get("chunk") or ""
+        return Chunk(
+            chunk=chunk_text,
+            repo=row.get("repo") or "",
+            path=row.get("path") or "",
+            language=row.get("language") or "unknown",
+            start_rc=(int(row.get("start_row") or 0), int(row.get("start_col") or 0)),
+            end_rc=(int(row.get("end_row") or 0), int(row.get("end_col") or 0)),
+            start_bytes=int(row.get("start_bytes") or 0),
+            end_bytes=int(row.get("end_bytes") or len(chunk_text.encode("utf-8"))),
+            embeddings=row.get("embedding"),
         )
 
 

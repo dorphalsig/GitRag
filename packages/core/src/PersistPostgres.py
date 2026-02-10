@@ -107,12 +107,63 @@ class PersistInPostgres(PersistenceAdapter):
         with self._engine.begin() as conn:
             conn.execute(delete_stmt, {"paths": tuple(paths)})
 
+    def search(self, query_embedding: List[float], query_text: str, limit: int = 10) -> List[Chunk]:
+        normalized_limit = max(1, int(limit))
+        sql = text(
+            f"""
+            SELECT
+                id,
+                path,
+                repo,
+                chunk,
+                embedding,
+                ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) AS keyword_rank,
+                1 - (embedding <=> :query_embedding) AS vector_rank,
+                ((1 - (embedding <=> :query_embedding)) * 0.7 +
+                 ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) * 0.3) AS hybrid_rank
+            FROM {self._table}
+            WHERE (:query_text = '' OR search_vector @@ websearch_to_tsquery('english', :query_text))
+            ORDER BY hybrid_rank DESC
+            LIMIT :limit
+            """
+        ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sql,
+                {
+                    "query_text": (query_text or "").strip(),
+                    "query_embedding": query_embedding,
+                    "limit": normalized_limit,
+                },
+            ).mappings().all()
+        return [self._row_to_chunk(dict(row)) for row in rows]
+
     def _decode_embedding(self, raw: bytes) -> List[float]:
         if len(raw) != self._dim * 4:
             raise ValueError(f"Embedding size mismatch: expected {self._dim * 4} bytes, got {len(raw)}")
         vals = array("f")
         vals.frombytes(raw)
         return list(vals)
+
+    def _row_to_chunk(self, row: Dict[str, Any]) -> Chunk:
+        text_value = row.get("chunk") or ""
+        embedding = row.get("embedding")
+        embedding_bytes = None
+        if embedding is not None:
+            vals = array("f", embedding)
+            embedding_bytes = vals.tobytes()
+        return Chunk(
+            chunk=text_value,
+            repo=row.get("repo") or "",
+            path=row.get("path") or "",
+            language="unknown",
+            start_rc=(0, 0),
+            end_rc=(0, 0),
+            start_bytes=0,
+            end_bytes=len(text_value.encode("utf-8")),
+            embeddings=embedding_bytes,
+        )
 
 
 def _postgres_factory(
