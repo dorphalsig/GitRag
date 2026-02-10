@@ -1,4 +1,4 @@
-name: Sync Master to NT
+name: Sync Master to NT.
 
 on:
   workflow_dispatch:
