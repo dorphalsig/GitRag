@@ -25,6 +25,7 @@ from typing import Iterable, List, Tuple, Optional, Dict, Any
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
 from Chunk import Chunk
+from LineMapper import LineMapper
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ _FENCE_RE = re.compile(r"^(```+|~~~+)(.*)$")
 _REQUIREMENT_PATTERN = re.compile(r"\b(shall|must|should|required|use case|scenario)\b", re.IGNORECASE)
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_BLANK_LINE_RE = re.compile(rb"\r?\n[ \t]*\r?\n")
 
 
 def _slugify(text: str) -> str:
@@ -76,22 +78,6 @@ class DocBlock:
     fence_lang: Optional[str] = None
 
 
-class LineMapper:
-    """Map byte offsets to (row, col) using a newline index."""
-
-    def __init__(self, contents: bytes) -> None:
-        self.newlines = [i for i, byte in enumerate(contents) if byte == 10]
-
-    def byte_to_point(self, offset: int) -> Tuple[int, int]:
-        if offset <= 0:
-            return (0, 0)
-
-        idx = bisect.bisect_left(self.newlines, offset)
-        if idx == 0:
-            return (0, offset)
-
-        prev_newline = self.newlines[idx - 1]
-        return (idx, offset - prev_newline - 1)
 
 
 def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
@@ -189,17 +175,19 @@ def _chunk_non_code(
     if not siblings:
         return _chunk_fallback(contents, path, language, repo, mapper)
 
-    groups: List[Tuple[int, int]] = _pack_siblings(contents, siblings)
+    groups: List[Tuple[int, int]] = _pack_siblings(contents, siblings, mapper)
     if not groups:
         return _chunk_fallback(contents, path, language, repo, mapper)
 
     return [
         _make_chunk(contents, s, e, path, language, repo, mapper)
-        for (s, e) in _stitch_full_coverage(contents, groups)
+        for (s, e) in _stitch_full_coverage(contents, groups, mapper)
     ]
 
 
-def _stitch_full_coverage(contents: bytes, groups: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+def _stitch_full_coverage(
+    contents: bytes, groups: List[Tuple[int, int]], mapper: LineMapper
+) -> List[Tuple[int, int]]:
     """
     Expand grouped sibling ranges to cover the entire file by inserting ranges for
     leading bytes, inter-group gaps, and trailing bytes. Gap ranges are split with
@@ -209,11 +197,11 @@ def _stitch_full_coverage(contents: bytes, groups: List[Tuple[int, int]]) -> Lis
     cursor = 0
     for s, e in groups:
         if s > cursor:
-            result.extend(_newline_aligned_ranges(contents, cursor, s))
+            result.extend(_newline_aligned_ranges(contents, cursor, s, mapper))
         result.append((s, e))
         cursor = e
     if cursor < len(contents):
-        result.extend(_newline_aligned_ranges(contents, cursor, len(contents)))
+        result.extend(_newline_aligned_ranges(contents, cursor, len(contents), mapper))
     return result
 
 
@@ -242,14 +230,14 @@ def _chunk_fallback(
         raise ValueError("contents must be non-empty bytes")
 
     overlap = int(FALLBACK_OVERLAP_RATIO * SOFT_MAX_BYTES)
-    ranges = _newline_aligned_ranges(contents, 0, len(contents), overlap=overlap)
+    ranges = _newline_aligned_ranges(contents, 0, len(contents), mapper, overlap=overlap)
     return [_make_chunk(contents, s, e, path, language, repo, mapper) for s, e in ranges]
 
 
 def _chunk_document(
     contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper
 ) -> List[Chunk]:
-    ctx = _build_doc_context(contents)
+    ctx = _build_doc_context(contents, mapper)
     if ctx is None:
         return _chunk_plaintext_bytes(contents, path, "text", repo, mapper)
 
@@ -289,8 +277,7 @@ def _chunk_markdown(
                 heading_stack.pop()
             heading_stack.append((level, block.heading_title, block.heading_anchor))
 
-        for part in _split_block_if_needed(ctx, block):
-            part_bytes = ctx.char_to_byte[part.end_char] - ctx.char_to_byte[part.start_char]
+        for part in _split_block_if_needed(ctx, block, mapper):
             if current is None:
                 current = _new_segment(part.start_char, heading_stack)
             else:
@@ -475,7 +462,7 @@ def _chunk_json(
     segments: List[Dict[str, Any]] = []
     for start_char, end_char, breadcrumb in spans:
         block = DocBlock(start_char=start_char, end_char=end_char, type="json")
-        for part in _split_block_if_needed(ctx, block):
+        for part in _split_block_if_needed(ctx, block, mapper):
             seg = _new_segment(part.start_char, [])
             seg["breadcrumb"] = list(breadcrumb)
             seg["blocks"].append(part)
@@ -547,7 +534,7 @@ def _chunk_yaml_toml(
     segments: List[Dict[str, Any]] = []
     for block in blocks:
         heading = _yaml_toml_heading(ctx.text[block.start_char:block.end_char])
-        for part in _split_block_if_needed(ctx, block):
+        for part in _split_block_if_needed(ctx, block, mapper):
             seg = _new_segment(part.start_char, [])
             if heading:
                 seg["breadcrumb"] = [heading]
@@ -568,7 +555,7 @@ def _chunk_csv(
         return []
     block = DocBlock(start_char=0, end_char=len(ctx.text), type="table")
     segments: List[Dict[str, Any]] = []
-    for part in _split_block_if_needed(ctx, block):
+    for part in _split_block_if_needed(ctx, block, mapper):
         seg = _new_segment(part.start_char, [])
         seg["blocks"].append(part)
         seg["end_char"] = part.end_char
@@ -588,7 +575,7 @@ def _chunk_plaintext(
         return []
     block = DocBlock(start_char=0, end_char=len(ctx.text), type="text")
     segments: List[Dict[str, Any]] = []
-    for part in _split_block_if_needed(ctx, block):
+    for part in _split_block_if_needed(ctx, block, mapper):
         seg = _new_segment(part.start_char, [])
         seg["blocks"].append(part)
         seg["end_char"] = part.end_char
@@ -599,30 +586,6 @@ def _chunk_plaintext(
     return _segments_to_chunks(ctx, contents, path, repo, "text", segments, mapper)
 
 
-def _doc_byte_ranges(contents: bytes, start: int, end: int, overlap: int = DOC_OVERLAP_BYTES) -> List[Tuple[int, int]]:
-    if start >= end:
-        return []
-    ranges: List[Tuple[int, int]] = []
-    cur = start
-    while cur < end:
-        soft_end = min(cur + DOC_SOFT_MAX_BYTES, end)
-        lo = max(cur + 1, soft_end - NEWLINE_WINDOW)
-        hi = min(end - 1, soft_end + NEWLINE_WINDOW)
-        split = _nearest_newline(contents, soft_end, lo, hi)
-        if split is None:
-            split = soft_end
-        if (split - cur) > DOC_HARD_CAP_BYTES:
-            split = cur + DOC_HARD_CAP_BYTES
-        if split <= cur:
-            split = min(end, cur + DOC_HARD_CAP_BYTES)
-        ranges.append((cur, split))
-        if split >= end:
-            break
-        next_start = split - overlap
-        if next_start <= cur:
-            next_start = split
-        cur = next_start
-    return ranges
 
 
 def _chunk_plaintext_bytes(
@@ -631,8 +594,20 @@ def _chunk_plaintext_bytes(
     total = len(contents)
     if total == 0:
         return []
-    eol = "\r\n" if b"\r\n" in contents else ("\n" if b"\n" in contents else "")
-    ranges = _doc_byte_ranges(contents, 0, total)
+    
+    # Efficient EOL detection using LineMapper
+    if mapper.newlines:
+        first_nl = mapper.newlines[0]
+        eol = "\r\n" if first_nl > 0 and contents[first_nl - 1] == 13 else "\n"
+    else:
+        eol = ""
+
+    ranges = _newline_aligned_ranges(
+        contents, 0, total, mapper, 
+        soft_max=DOC_SOFT_MAX_BYTES, 
+        hard_cap=DOC_HARD_CAP_BYTES, 
+        overlap=DOC_OVERLAP_BYTES
+    )
     chunks: List[Chunk] = []
     for start, end in ranges:
         text = contents[start:end].decode("utf-8", errors="replace")
@@ -865,20 +840,18 @@ def _parse_markdown_blocks(ctx: DocContext) -> List[DocBlock]:
     return blocks
 
 
-def _split_block_if_needed(ctx: DocContext, block: DocBlock) -> List[DocBlock]:
+def _split_block_if_needed(ctx: DocContext, block: DocBlock, mapper: LineMapper) -> List[DocBlock]:
     start_bytes = ctx.char_to_byte[block.start_char]
     end_bytes = ctx.char_to_byte[block.end_char]
     total = end_bytes - start_bytes
     if total <= DOC_HARD_CAP_BYTES or block.type == "heading":
         return [block]
 
-    newline_positions: List[int] = []
-    segment_text = ctx.text[block.start_char:block.end_char]
-    absolute = block.start_char
-    for ch in segment_text:
-        absolute += 1
-        if ch == "\n":
-            newline_positions.append(absolute)
+    # Efficiently find newlines using LineMapper
+    newline_indices = mapper.get_newline_positions(start_bytes, end_bytes)
+    # Convert byte offsets of newlines to char offsets (+1 to point AFTER the newline)
+    newline_positions = [_bytes_to_char(ctx, b + 1) for b in newline_indices]
+    
     if not newline_positions or newline_positions[-1] != block.end_char:
         newline_positions.append(block.end_char)
 
@@ -1072,18 +1045,22 @@ def _document_signature(
     return "|".join(parts)
 
 
-def _build_doc_context(contents: bytes) -> Optional[DocContext]:
+def _build_doc_context(contents: bytes, mapper: LineMapper) -> Optional[DocContext]:
     try:
         text = contents.decode("utf-8")
     except UnicodeDecodeError:
         return None
 
-    char_to_byte: List[int] = [0] * (len(text) + 1)
-    byte_pos = 0
-    for idx, ch in enumerate(text):
-        char_to_byte[idx] = byte_pos
-        byte_pos += len(ch.encode("utf-8"))
-    char_to_byte[len(text)] = byte_pos
+    if len(text) == len(contents):
+        # Fast path for ASCII: char offsets == byte offsets
+        char_to_byte = list(range(len(text) + 1))
+    else:
+        char_to_byte: List[int] = [0] * (len(text) + 1)
+        byte_pos = 0
+        for idx, ch in enumerate(text):
+            char_to_byte[idx] = byte_pos
+            byte_pos += len(ch.encode("utf-8"))
+        char_to_byte[len(text)] = byte_pos
 
     lines = text.splitlines(True)
     line_offsets: List[int] = []
@@ -1092,7 +1069,13 @@ def _build_doc_context(contents: bytes) -> Optional[DocContext]:
         line_offsets.append(cursor)
         cursor += len(line)
 
-    eol = "\r\n" if "\r\n" in text else "\n"
+    # Efficient EOL detection using LineMapper
+    if mapper.newlines:
+        first_nl = mapper.newlines[0]
+        eol = "\r\n" if first_nl > 0 and contents[first_nl - 1] == 13 else "\n"
+    else:
+        eol = ""
+
     return DocContext(
         text=text,
         char_to_byte=char_to_byte,
@@ -1398,14 +1381,14 @@ def _build_method_like_chunks(
 
     parts: List[Tuple[int, int]]
     if body is not None and body.named_children:
-        parts = _pack_siblings(contents, list(body.named_children))
+        parts = _pack_siblings(contents, list(body.named_children), mapper)
         parts = [(max(s, body.start_byte), min(e, body.end_byte)) for s, e in parts]
         fixed: List[Tuple[int, int]] = []
         for s, e in parts:
-            fixed.extend(_newline_aligned_ranges(contents, s, e) if (e - s) > HARD_CAP_BYTES else [(s, e)])
+            fixed.extend(_newline_aligned_ranges(contents, s, e, mapper) if (e - s) > HARD_CAP_BYTES else [(s, e)])
         parts = fixed
     else:
-        parts = _newline_aligned_ranges(contents, node.start_byte, node.end_byte)
+        parts = _newline_aligned_ranges(contents, node.start_byte, node.end_byte, mapper)
 
     fqn = _fqn_for_node(node, contents, path, language, pkg)
     chunks = []
@@ -1413,15 +1396,14 @@ def _build_method_like_chunks(
         start = unit_start if i == 0 else s
         end = e
         chunks.append(
-            Chunk(
-                chunk=contents[start:end].decode("utf-8", errors="replace"),
-                repo=repo,
-                path=path,
-                language=language,
-                start_rc=mapper.byte_to_point(start),
-                end_rc=mapper.byte_to_point(end),
-                start_bytes=start,
-                end_bytes=end,
+            _make_chunk(
+                contents,
+                start,
+                end,
+                path,
+                language,
+                repo,
+                mapper,
                 signature=(f"{fqn}#part{i + 1}" if len(parts) > 1 else fqn),
             )
         )
@@ -1527,7 +1509,7 @@ def _leading_trivia_start(contents: bytes, node: Node) -> int:
 
 def _has_blank_line_between(contents: bytes, a_end: int, b_start: int) -> bool:
     """Return True if a blank line exists between byte offsets a_end and b_start."""
-    return bool(re.search(rb"\r?\n[ \t]*\r?\n", contents[a_end:b_start]))
+    return bool(_BLANK_LINE_RE.search(contents, a_end, b_start))
 
 
 def _find_body_node(node: Node) -> Optional[Node]:
@@ -1647,7 +1629,9 @@ def _first_multi_child_level(root) -> "Node":
         node = kids[0]
 
 
-def _pack_siblings(contents: bytes, siblings: List["Node"]) -> List[Tuple[int, int]]:
+def _pack_siblings(
+    contents: bytes, siblings: List["Node"], mapper: LineMapper
+) -> List[Tuple[int, int]]:
     """
     Pack sibling nodes sequentially up to SOFT_MAX_BYTES. Oversized siblings are handled
     via a one-level deeper pass or size-based splits. Produces contiguous, non-overlapping
@@ -1664,7 +1648,7 @@ def _pack_siblings(contents: bytes, siblings: List["Node"]) -> List[Tuple[int, i
             if cur_start is not None:
                 ranges.append((cur_start, last_end))
                 cur_start = last_end = None
-            ranges.extend(_split_large_node(contents, node))
+            ranges.extend(_split_large_node(contents, node, mapper))
             continue
 
         if cur_start is None:
@@ -1684,7 +1668,7 @@ def _pack_siblings(contents: bytes, siblings: List["Node"]) -> List[Tuple[int, i
     return ranges
 
 
-def _split_large_node(contents: bytes, node: "Node") -> List[Tuple[int, int]]:
+def _split_large_node(contents: bytes, node: "Node", mapper: LineMapper) -> List[Tuple[int, int]]:
     """
     One child-level pass: try packing named children inside the large node. If the node has no
     named children or any sub-range still violates caps, fall back to size-based splitting
@@ -1692,12 +1676,12 @@ def _split_large_node(contents: bytes, node: "Node") -> List[Tuple[int, int]]:
     """
     kids = list(node.named_children)
     if not kids:
-        return _newline_aligned_ranges(contents, node.start_byte, node.end_byte)
+        return _newline_aligned_ranges(contents, node.start_byte, node.end_byte, mapper)
 
     # Pack child siblings within node bounds.
-    sub = _pack_siblings(contents, kids)
+    sub = _pack_siblings(contents, kids, mapper)
     if not sub:
-        return _newline_aligned_ranges(contents, node.start_byte, node.end_byte)
+        return _newline_aligned_ranges(contents, node.start_byte, node.end_byte, mapper)
 
     # Clamp first/last to include the node’s full span (to preserve inner leading/trailing bytes).
     sub[0] = (node.start_byte, sub[0][1])
@@ -1707,39 +1691,45 @@ def _split_large_node(contents: bytes, node: "Node") -> List[Tuple[int, int]]:
     normalized: List[Tuple[int, int]] = []
     for s, e in sub:
         if (e - s) > HARD_CAP_BYTES:
-            normalized.extend(_newline_aligned_ranges(contents, s, e))
+            normalized.extend(_newline_aligned_ranges(contents, s, e, mapper))
         else:
             normalized.append((s, e))
     return normalized
 
 
-def _newline_aligned_ranges(contents: bytes, start: int, end: int, overlap: int = 0) -> List[Tuple[int, int]]:
+def _newline_aligned_ranges(
+    contents: bytes, 
+    start: int, 
+    end: int, 
+    mapper: LineMapper, 
+    soft_max: int = SOFT_MAX_BYTES,
+    hard_cap: int = HARD_CAP_BYTES,
+    overlap: int = 0
+) -> List[Tuple[int, int]]:
     """
-    Split [start, end) into segments targeting SOFT_MAX_BYTES each, then apply
+    Split [start, end) into segments targeting soft_max each, then apply
     **size + overlap + nudge**:
-      - choose a size-based boundary (cur + SOFT_MAX_BYTES),
-      - nudge that single boundary to the nearest newline within ±NEWLINE_WINDOW,
+      - choose a size-based boundary (cur + soft_max),
+      - nudge that single boundary to the nearest newline within Â±NEWLINE_WINDOW,
       - next segment starts at (split - overlap).
-    Ensures no segment exceeds HARD_CAP_BYTES and guarantees forward progress.
+    Ensures no segment exceeds hard_cap and guarantees forward progress.
     """
     if start >= end:
         return []
     ranges: List[Tuple[int, int]] = []
     cur = start
-    n = len(contents)
-    step = SOFT_MAX_BYTES
 
     while cur < end:
-        soft_end = min(cur + step, end)
+        soft_end = min(cur + soft_max, end)
         lo = max(cur + 1, soft_end - NEWLINE_WINDOW)
         hi = min(end - 1, soft_end + NEWLINE_WINDOW)
-        split = _nearest_newline(contents, soft_end, lo, hi) or soft_end
+        split = mapper.find_nearest_newline(soft_end, lo, hi) or soft_end
 
         # Enforce hard cap and ensure progress.
-        if (split - cur) > HARD_CAP_BYTES:
-            split = cur + HARD_CAP_BYTES
+        if (split - cur) > hard_cap:
+            split = cur + hard_cap
         if split <= cur:
-            split = min(end, cur + min(step, HARD_CAP_BYTES))
+            split = min(end, cur + min(soft_max, hard_cap))
 
         ranges.append((cur, split))
         if split >= end:
@@ -1753,19 +1743,6 @@ def _newline_aligned_ranges(contents: bytes, start: int, end: int, overlap: int 
     return ranges
 
 
-def _nearest_newline(contents: bytes, target: int, lo: int, hi: int) -> Optional[int]:
-    """
-    Return the byte index of the newline closest to target in [lo, hi], or None if no newline.
-    """
-    left, right = target, target + 1
-    while left >= lo or right <= hi:
-        if left >= lo and contents[left:left + 1] == b"\n":
-            return left + 1  # split after newline to keep it in the previous chunk
-        if right <= hi and contents[right - 1:right] == b"\n":
-            return right  # right is already after the newline byte
-        left -= 1
-        right += 1
-    return None
 
 
 def _bytes_to_char(ctx: DocContext, byte_offset: int) -> int:

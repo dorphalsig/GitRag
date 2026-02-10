@@ -110,7 +110,6 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
         cls.SOFT_MAX = int(chunker.SOFT_MAX_BYTES)
         cls.NEWLINE_WINDOW = int(chunker.NEWLINE_WINDOW)
         cls.newline_aligned = staticmethod(chunker._newline_aligned_ranges)
-        cls.nearest_newline = staticmethod(chunker._nearest_newline)
         cls.byte_to_point = staticmethod(_line_mapper_byte_to_point)
         cls.has_blank_line_between = staticmethod(chunker._has_blank_line_between)
         cfg_path = Path(chunker.__file__).with_name("grammar_queries.json")
@@ -122,34 +121,38 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
         """No-newline files split by size without gaps or overlaps."""
         for fname in ("no_newlines_small.txt", "no_newlines_large.txt"):
             data = _load_bytes(fname)
-            ranges = self.newline_aligned(data, 0, len(data), overlap=0)
+            mapper = chunker.LineMapper(data)
+            ranges = self.newline_aligned(data, 0, len(data), mapper, overlap=0)
             self.assertCoverageNoGaps(ranges, 0, len(data), overlap=0, hard_cap=self.HARD_CAP)
 
     def test_crlf_and_nearest_newline_behavior(self):
         """CRLF files: nearest_newline returns an index at/near LF within the window; coverage holds."""
         data = _load_bytes("crlf.txt")
+        mapper = chunker.LineMapper(data)
         start, end = 0, len(data)
         target = min(start + self.SOFT_MAX, end - 1)
         lo = max(start + 1, target - self.NEWLINE_WINDOW)
         hi = min(end - 1, target + self.NEWLINE_WINDOW)
-        idx = self.nearest_newline(data, target, lo, hi)
+        idx = mapper.find_nearest_newline(target, lo, hi)
         if idx is not None:
             # Accept either pointing at '\n' or immediately after it (implementation detail tolerant).
             near_lf = (data[idx:idx+1] == b"\n") or (data[idx-1:idx] == b"\n")
             self.assertTrue(near_lf and (lo <= idx <= hi + 1))
-        ranges = self.newline_aligned(data, 0, len(data), overlap=64)
+        ranges = self.newline_aligned(data, 0, len(data), mapper, overlap=64)
         self.assertCoverageNoGaps(ranges, 0, len(data), overlap=64, hard_cap=self.HARD_CAP)
 
     def test_tiny_file_single_range(self):
         """Tiny files (≤ a few bytes) should yield a single exact range."""
         data = _load_bytes("tiny.txt")
-        ranges = self.newline_aligned(data, 0, len(data), overlap=0)
+        mapper = chunker.LineMapper(data)
+        ranges = self.newline_aligned(data, 0, len(data), mapper, overlap=0)
         self.assertEqual(ranges, [(0, len(data))])
 
     def test_huge_file_enforces_hard_cap(self):
         """Large file: every segment length must be ≤ HARD_CAP_BYTES."""
         data = _load_bytes("huge_random.txt")
-        ranges = self.newline_aligned(data, 0, len(data), overlap=0)
+        mapper = chunker.LineMapper(data)
+        ranges = self.newline_aligned(data, 0, len(data), mapper, overlap=0)
         for s, e in ranges:
             self.assertLessEqual(e - s, self.HARD_CAP)
 
@@ -165,8 +168,9 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
                 if rnd.random() < rate:
                     bs.append(0x0A)  # '\n'
             data = bytes(bs)
+            mapper = chunker.LineMapper(data)
             overlap = rnd.randint(0, min(1024, self.SOFT_MAX // 2))
-            ranges = self.newline_aligned(data, 0, len(data), overlap=overlap)
+            ranges = self.newline_aligned(data, 0, len(data), mapper, overlap=overlap)
             self.assertCoverageNoGaps(ranges, 0, len(data), overlap=overlap, hard_cap=self.HARD_CAP)
 
     @staticmethod
@@ -180,12 +184,23 @@ class TestHelpers(InvariantsMixin, unittest.TestCase):
     def test_byte_to_point_matches_naive(self):
         """Compare helper with a naive reference across fixed and random indices."""
         data = _load_bytes("huge_random.txt")
+        mapper = chunker.LineMapper(data)
         for idx in (0, len(data)//4, len(data)//2, len(data) - 1):
-            self.assertEqual(self.byte_to_point(data, idx), self._naive_byte_to_point(data, idx))
+            self.assertEqual(mapper.byte_to_point(idx), self._naive_byte_to_point(data, idx))
         rnd = random.Random(9)
         for _ in range(100):
             i = rnd.randint(0, len(data) - 1)
-            self.assertEqual(self.byte_to_point(data, i), self._naive_byte_to_point(data, i))
+            self.assertEqual(mapper.byte_to_point(i), self._naive_byte_to_point(data, i))
+
+    def test_line_mapper_get_newline_positions(self):
+        """Verify get_newline_positions returns correct indices."""
+        data = b"line1\nline2\nline3\n"
+        mapper = chunker.LineMapper(data)
+        # newlines are at 5, 11, 17
+        self.assertEqual(mapper.get_newline_positions(0, 20), [5, 11, 17])
+        self.assertEqual(mapper.get_newline_positions(6, 12), [11])
+        self.assertEqual(mapper.get_newline_positions(0, 5), [])
+        self.assertEqual(mapper.get_newline_positions(5, 6), [5])
 
     def test_has_blank_line_between_variants(self):
         """Detect blank lines with LF and CRLF, including whitespace-only lines."""
