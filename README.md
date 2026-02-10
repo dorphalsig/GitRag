@@ -1,139 +1,84 @@
-# GitRag — A RAG Indexer for Git Repositories
+# GitRag
 
-## Index
-- [Vision](#vision)
-- [Roadmap vs Implementation](#roadmap-vs-implementation)
-- [Feature-by-Feature Summary](#feature-by-feature-summary)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Development](#development)
-- [License](#license)
+**GitRag** is a lightweight, Git-native RAG (Retrieval-Augmented Generation) indexer and retriever. It is architected to operate efficiently within the resource constraints of free-tier environments like GitHub Actions and Hugging Face Spaces.
 
-## Vision
-GitRag keeps Git and GitHub repositories searchable for retrieval-augmented generation by combining Tree-sitter powered chunking with lightweight embedding and persistence steps that fit within the GitHub Actions free tier. The pipeline focuses on incremental updates, storing metadata, raw text, and embeddings inside libSQL so hybrid vector/keyword search remains fast and fully portable.
+## 💡 Why GitRag?
 
-Looking for the retrieval/query side? Check out the companion service in `dorphalsig/GitRag-Retrieve` which consumes these indexes for hybrid (vector + keyword) search.
+Unlike general-purpose RAG frameworks (like **QwenRag**) or high-throughput Rust-based ETL pipelines (like **CocoIndex**), GitRag is built for the Git lifecycle:
 
-## Roadmap vs Implementation
-### Already Delivered
-- Deterministic AST + document chunker covering code and structured formats with size-aware fallbacks.
-- Git-aware CLI (`src/Indexer.py`) that inspects the last commit, filters binaries, and batches process/delete operations (includes `--full` initial indexing support).
-- libSQL persistence workflow with schema bootstrapping, transactional writes, and verified end-to-end smoke tests.
-- SentenceTransformers CodeRankEmbed calculator wired through chunking → embedding → persistence.
-- GitHub Action wrapper (`action.yml`) to run the indexer in CI.
-- Pluggable persistence adapter registry with libSQL provided out of the box.
-- Test coverage for chunking helpers/docs, language fixtures, CLI processing, binary detection, and persistence stubs.
-- Contributor guide and mission principles published (`CONTRIBUTING.md`, `docs/mission.md`).
+* **Git-Native Delta Logic**: Uses `git diff` and `ls-files` to process only what changed. It handles renames and deletions natively, preventing index bloat.
+* **Repo & Branch Awareness**: Supports optional filtering by `repo` and `branch` during indexing and retrieval to narrow the search universe and improve precision.
+* **Edge-First Hybrid Search**: Defaults to **libSQL (Turso)** for portable, low-latency hybrid search (Vector + BM25) on the edge.
+* **Structured AST Chunking**: Uses Tree-sitter to break code into logical units (functions, classes) rather than arbitrary line counts.
 
-## Feature-by-Feature Summary
-### AST Chunking
-- `src/chunker.py` uses Tree-sitter grammars from `src/grammar_queries.json` to emit logical units (methods, config nodes) with byte-perfect spans.
-- Fallback `_newline_aligned_ranges` ensures coverage when grammars fail, respecting `SOFT_MAX_BYTES`, `HARD_CAP_BYTES`, and overlap constants.
+## 🛠 Configuration
 
-### Embedding
-- `Calculators.CodeRankCalculator` loads CodeRankEmbed via SentenceTransformers, normalizes vectors, and exposes dimensionality.
-- Embedding source is overrideable through `CODERANK_MODEL_DIR`.
+GitRag selects its persistence layer based on the `DB_PROVIDER` environment variable.
 
-### Persistence
-- `src/Persist.py` stores chunk metadata, embeddings (BLOB), and FTS content inside libSQL via SQLAlchemy.
-- Batches execute within a single transaction per chunk batch; FTS mirrors are refreshed transactionally.
-- `delete_batch` resolves chunk IDs by path and removes rows from both primary and FTS tables.
+### 1. libSQL / Turso (Default)
+Recommended for edge deployments and serverless environments.
+* `DB_PROVIDER`: `libsql`
+* `TURSO_DATABASE_URL`: Your database endpoint (e.g., `libsql://db-name.turso.io`).
+* `TURSO_AUTH_TOKEN`: Your access token.
 
-### Git-aware CLI
-- `src/Indexer.py` determines the last commit range, classifies change actions, consolidates binary detection with a shared `BinaryDetector`, and forwards work to the persistence layer.
-- `_process_files` loads chunk data, runs embeddings, and persists in a single batch per invocation.
+### 2. PostgreSQL / pgvector
+Recommended for existing database clusters.
+* `DB_PROVIDER`: `postgres`
+* `DATABASE_URL`: Your connection string (e.g., `postgresql://user:pass@host:5432/db`).
 
-### Extensibility
-- You can change the Embedding model by implementing  `EmbeddingCalculator`
-- GitHub Action packaging exposes the CLI as a reusable composite action.
+## 📦 Deployment
 
-### Community & Documentation *(complete)*
-- See [`docs/mission.md`](docs/mission.md) for architectural principles and goals.
-- Contribution process, testing expectations, and conduct guidelines live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
-## Configuration
-### Environment Variables (Required)
-- `TURSO_DATABASE_URL` — base libSQL endpoint (e.g. `libsql://<host>/<db>`).
-- `TURSO_AUTH_TOKEN` — Turso/libSQL auth token.
-
-### Environment Variables (Optional)
-- `CODERANK_MODEL_DIR` — Alternate Hugging Face repo or path for the embedding model.
-
-### CLI Inputs & Flags
-- `python src/Indexer.py <repo>` — positional argument representing the repository identifier stored alongside chunks.
-- `--full` — index every tracked and unignored text file using the shared binary detector (initial sync).
-
-### Heuristics & Knobs
-- Chunk sizing constants: `SOFT_MAX_BYTES=16_384`, `HARD_CAP_BYTES=24_576`, `NEWLINE_WINDOW=2_048`, `FALLBACK_OVERLAP_RATIO≈0.10` (see `src/chunker.py`).
-- Binary detection reads git attributes when available and samples up to 8 KiB of file bytes to guard against mislabeled binaries (`src/text_detection.py`).
-
-## Usage
-### Quickstart
-1. Install dependencies: `pip install -r requirements.txt`.
-2. Export `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
-3. Run `python src/Indexer.py <namespace/repo>` from a Git repository you wish to index. The script inspects the last commit to generate process/delete actions and prints a JSON summary.
-
-### Full Indexing
-- Run `python src/Indexer.py <namespace/repo> --full` to build the index from scratch. The command enumerates all tracked and unignored files (`git ls-files` + unignored additions), filters binaries via `BinaryDetector`, and persists chunks in a single batch.
-
-### Data Flow
-1. Collect git changes (rename-aware) and filter binary files via `BinaryDetector`.
-2. Chunk files with Tree-sitter and fallbacks; compute embeddings through `CodeRankCalculator`.
-3. Persist chunk metadata, embeddings, and FTS rows to libSQL inside a single transaction.
-
-### Supported File Families
-- Code: Kotlin, Java, Dart, Pascal, and others specified in `grammar_queries.json` (`code_extensions`).
-- Structured content: Markdown, JSON/JSONL, YAML, XML/Plist, TOML, HTML, CSS, etc. via `noncode_ts_grammar`.
-- Unknown extensions fall back to newline-aligned byte windowing.
-
-### GitHub Action Wrapper
-Use the bundled composite action to run GitRag in any repository:
+### GitHub Action (The Indexer)
+Automate your index updates on every push. Create `.github/workflows/index.yml`:
 
 ```yaml
+name: GitRag Indexing
+on:
+  push:
+    branches: [main]
+
 jobs:
   index:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./
         with:
-          repo: your-org/your-repo
-          full_index: true
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          fetch-depth: 2 # Required to calculate the git diff
+
+      - name: Run GitRag Indexer
+        uses: dorphalsig/gitrag@master
+        with:
+          repo: ${{ github.repository }}
+          branch: ${{ github.ref_name }} # Optional: track branch for filtering
+          turso_database_url: ${{ secrets.TURSO_DATABASE_URL }}
+          turso_auth_token: ${{ secrets.TURSO_AUTH_TOKEN }}
+          full_index: false # Use 'true' for the initial repo sync
 ```
 
-Inputs:
-- `repo` (required) — repository identifier stored with each chunk.
-- `full_index` (optional) — `true` to append `--full` for initial indexing.
-- `turso_database_url` / `turso_auth_token` — supplied via workflow `with:` values or repo secrets and forwarded as env vars.
+### Hugging Face Spaces (The Retriever)
+Deploy as a **Docker** Space to host a search API or MCP server.
 
-### Provisioning Helpers
-- Apply the statements in `provisioning/libsql/schema.sql` when creating a new database.
+**Requirements for HF Spaces Free:**
+* **SDK**: Docker.
+* **Hardware**: Minimum **"Standard CPU" (2 vCPU, 16GB RAM)**.
+* **Secrets**: Add your `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in the Space settings.
 
-## Development
-### Tooling
-- Python ≥3.9, Tree-sitter runtimes, SentenceTransformers.
-- Install dev dependencies via `pip install -r requirements.txt`.
+## 🖥 Hardware Requirements
 
-### Tests
-- Run unit tests with `pytest` (covers chunking helpers, fixtures, binary detection, CLI batching, and persistence stubs). In environments without optional dependencies (Tree-sitter, numpy, sentence-transformers, libSQL drivers), fall back to `python3 -m unittest` which skips dependent suites.
-- Fixture helpers in `tests/fixtures.py` generate deterministic inputs; tests auto-create missing sample files.
+| Component | Minimum | Recommended | Why? |
+| :--- | :--- | :--- | :--- |
+| **Indexer** | 2 vCPU, 4GB RAM | 2 vCPU, 7GB RAM | Standard GitHub Runners handle embedding tasks easily. |
+| **Retriever** | 2 vCPU, 16GB RAM | 4 vCPU, 16GB RAM | The **Qwen3-Reranker-0.6B** model requires significant RAM to load and stay resident. |
 
-### Document Chunking & Metadata
-- Non-code formats (Markdown, JSON/JSONL/NDJSON, YAML/TOML, CSV/TSV, plaintext) use a document-focused chunker with `DOC_GRAMMAR_VERSION=doc-chunker-v1`.
-- Each document chunk now carries metadata persisted to libSQL: `chunk_kind` (`doc`, `req`, `fence`, `table`, `json`, `yaml`, etc.), `heading_breadcrumb`, slug `anchors`, extracted `requirement_sentences`, inline/code-fence `code_refs`, per-table `table_delimiter`, detected `eol`, and fixed `overlap_bytes` (currently 256).
-- Markdown segmentation tracks headings/code fences to build breadcrumbs and include fence languages in `code_refs`.
-- JSON/TOML/YAML chunking associates top-level keys with breadcrumbs and surfaces requirement sentences from structured text.
-- Plaintext falls back to UTF-8 windows; undecodable files degrade to byte-range chunking with the same metadata schema.
+*Note: On free CPU tiers, expect a ~10 second delay for the first query as the model loads into memory.* ☕
 
-### Key Modules
-- `src/Indexer.py` — CLI orchestrator and git integration.
-- `src/chunker.py` — Chunk slicing logic and Tree-sitter integration.
-- `src/Persist.py` — libSQL persistence adapter implemented with SQLAlchemy.
-- `src/text_detection.py` — Shared binary detector used by CLI and upcoming initial indexing flows.
-- `tests/` — Chunker, CLI, and persistence coverage.
+## ⚠️ Compatibility Warning
+**Embeddings are model-specific.** If you change your embedding model (e.g., from Qwen 2.5 to 3, or from 0.6B to 8B), you **must** perform a full re-index (`--full`). Mixing vectors from different versions or sizes will result in zero retrieval accuracy.
 
-## License
-GitRag is released under the MIT License with attribution. See [`LICENSE`](LICENSE).
+## 🏗 Supported Environments
+* **Code**: Kotlin, Java, Dart, Python, and more via Tree-sitter.
+* **Data**: Markdown (with breadcrumbs), JSON/JSONL, YAML, XML, TOML.
+* **Interfaces**: Standard Python API and Model Context Protocol (MCP) server.
+
+## 📜 License
+Released under the MIT License.

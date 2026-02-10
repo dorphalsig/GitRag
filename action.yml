@@ -9,6 +9,9 @@ inputs:
     description: "Set to true to index all tracked files using --full"
     required: false
     default: "false"
+  branch:
+    description: "Optional branch name (e.g. ${{ github.ref_name }})"
+    required: false
   turso_database_url:
     description: "libSQL database URL (e.g. libsql://...)"
     required: true
@@ -34,6 +37,9 @@ runs:
         EXTRA_ARGS=""
         if [ "${{ inputs.full_index }}" = "true" ]; then
           EXTRA_ARGS="--full"
+        fi
+        if [ -n "${{ inputs.branch }}" ]; then
+          EXTRA_ARGS="${EXTRA_ARGS} --branch ${{ inputs.branch }}"
         fi
         python src/Indexer.py "${{ inputs.repo }}" ${EXTRA_ARGS}
 branding:
