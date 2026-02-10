@@ -31,3 +31,5 @@ Thumbs.db
 
 # Agent OS cache directories (allow product docs tracked separately)
 .agent-os/cache/
+/.ai/
+/.idea/
