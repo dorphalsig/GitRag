@@ -267,6 +267,8 @@ def main() -> None:
     parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
     parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
     parser.add_argument("--branch", default=None, help="Optional branch name to attach to indexed chunks.")
+    parser.add_argument("--from-sha", default=None, help="Start commit SHA for diff range")
+    parser.add_argument("--to-sha", default=None, help="End commit SHA for diff range")    
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
