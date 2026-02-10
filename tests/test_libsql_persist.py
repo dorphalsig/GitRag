@@ -89,7 +89,7 @@ class LibsqlPersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = f"tests/libsql/{uuid4().hex}"
         self.path = "src/test_chunk.py"
-        cfg = LibsqlConfig(
+        cfg = LibsqlConfig.from_parts(
             database_url=self._database_url,
             auth_token=self._auth_token,
         )
