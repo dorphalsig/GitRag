@@ -56,7 +56,7 @@ jobs:
 ```
 
 ### Hugging Face Spaces (The Retriever)
-Deploy as a **Docker** Space to host a search API or MCP server.
+Deploy as a **Docker** Space to host a search API or MCP server. For this use the [Dockerfile](Dockerfile).
 
 **Requirements for HF Spaces Free:**
 * **SDK**: Docker.
