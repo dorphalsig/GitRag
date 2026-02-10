@@ -213,7 +213,13 @@ def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]
     return calc, persist
 
 
-def _process_files(paths: Iterable[str], repo: str, calc: CodeRankCalculator, persist: PersistenceAdapter) -> int:
+def _process_files(
+    paths: Iterable[str],
+    repo: str,
+    calc: CodeRankCalculator,
+    persist: PersistenceAdapter,
+    branch: str | None = None,
+) -> int:
     """Chunk, embed, and persist all given text files.
 
     Returns:
@@ -224,7 +230,7 @@ def _process_files(paths: Iterable[str], repo: str, calc: CodeRankCalculator, pe
     for p in paths:
         logger.info("Processing file: %s", p)
         try:
-            chunks = chunker.chunk_file(p, repo)
+            chunks = chunker.chunk_file(p, repo, branch=branch)
             logger.debug("File %s produced %d chunks", p, len(chunks))
             for c in chunks:
                 logger.debug(
@@ -257,11 +263,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Process repository changes for indexing.")
     parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
     parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
+    parser.add_argument("--branch", default=None, help="Optional branch name to attach to indexed chunks.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     detector = BinaryDetector(_run_git)
+    logger.info("Starting indexer for repo=%s branch=%s", args.repo, args.branch or "<none>")
 
     if args.full:
         logger.info("Running in full indexing mode")
@@ -285,7 +293,7 @@ def main() -> None:
         except Exception as e:
             logger.error("Deletion pass failed: %s", e)
 
-    processed_chunks = _process_files(sorted(text_to_proc), args.repo, calc, persist)
+    processed_chunks = _process_files(sorted(text_to_proc), args.repo, calc, persist, branch=args.branch)
 
     summary = {
         "repo": args.repo,

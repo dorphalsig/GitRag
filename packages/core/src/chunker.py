@@ -122,28 +122,28 @@ DOC_YAML_EXTS = {"yaml", "yml"}
 DOC_TOML_EXTS = {"toml"}
 DOC_CSV_EXTS = {"csv"}
 DOC_TSV_EXTS = {"tsv"}
-def chunk_file(path: str, repo: str) -> List[Chunk]:
+def chunk_file(path: str, repo: str, branch: str | None = None) -> List[Chunk]:
     path_obj = Path(path)
     file_extension = path_obj.suffix.lower().lstrip(".")
     contents = path_obj.read_bytes()
     mapper = LineMapper(contents)
 
     if lang := CODE_EXTENSIONS.get(file_extension, None):
-        chunks = _chunk_code(contents, path, lang, repo, mapper)
+        chunks = _chunk_code(contents, path, lang, repo, mapper, branch=branch)
     elif file_extension in (
         DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS
     ):
-        chunks = _chunk_document(contents, path, file_extension, repo, mapper)
+        chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
     elif lang := NONCODE_TS_GRAMMAR.get(file_extension, None):
-        chunks = _chunk_non_code(contents, path, lang, repo, mapper)
+        chunks = _chunk_non_code(contents, path, lang, repo, mapper, branch=branch)
     else:
-        chunks = _chunk_document(contents, path, file_extension, repo, mapper)
+        chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
 
     return chunks
 
 
 def _chunk_non_code(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper
+    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     """
     Chunk a non-code file using Tree-sitter:
@@ -164,23 +164,23 @@ def _chunk_non_code(
         logger.warning(
             "Failed to parse %s as %s: %s. Falling back to text.", path, language, exc
         )
-        return _chunk_plaintext_bytes(contents, path, "text", repo, mapper)
+        return _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
 
     # Whole-file small case: emit a single chunk from the **original contents** and stop.
     if (root.end_byte - root.start_byte) < SOFT_MAX_BYTES:
-        return [_make_chunk(contents, root.start_byte, root.end_byte, path, language, repo, mapper)]
+        return [_make_chunk(contents, root.start_byte, root.end_byte, path, language, repo, mapper, branch=branch)]
 
     base = _first_multi_child_level(root)
     siblings = list(base.named_children)
     if not siblings:
-        return _chunk_fallback(contents, path, language, repo, mapper)
+        return _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
 
     groups: List[Tuple[int, int]] = _pack_siblings(contents, siblings, mapper)
     if not groups:
-        return _chunk_fallback(contents, path, language, repo, mapper)
+        return _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
 
     return [
-        _make_chunk(contents, s, e, path, language, repo, mapper)
+        _make_chunk(contents, s, e, path, language, repo, mapper, branch=branch)
         for (s, e) in _stitch_full_coverage(contents, groups, mapper)
     ]
 
@@ -206,7 +206,7 @@ def _stitch_full_coverage(
 
 
 def _chunk_fallback(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper
+    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     """
     Fallback chunking without Tree-sitter:
@@ -231,27 +231,27 @@ def _chunk_fallback(
 
     overlap = int(FALLBACK_OVERLAP_RATIO * SOFT_MAX_BYTES)
     ranges = _newline_aligned_ranges(contents, 0, len(contents), mapper, overlap=overlap)
-    return [_make_chunk(contents, s, e, path, language, repo, mapper) for s, e in ranges]
+    return [_make_chunk(contents, s, e, path, language, repo, mapper, branch=branch) for s, e in ranges]
 
 
 def _chunk_document(
-    contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper
+    contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     ctx = _build_doc_context(contents, mapper)
     if ctx is None:
-        return _chunk_plaintext_bytes(contents, path, "text", repo, mapper)
+        return _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
 
     if ext in DOC_MARKDOWN_EXTS:
-        return _chunk_markdown(ctx, contents, path, repo, "markdown", mapper)
+        return _chunk_markdown(ctx, contents, path, repo, "markdown", mapper, branch=branch)
     if ext in DOC_JSON_EXTS:
-        return _chunk_json(ctx, contents, path, repo, ext, mapper)
+        return _chunk_json(ctx, contents, path, repo, ext, mapper, branch=branch)
     if ext in DOC_YAML_EXTS or ext in DOC_TOML_EXTS:
-        return _chunk_yaml_toml(ctx, contents, path, repo, ext, mapper)
+        return _chunk_yaml_toml(ctx, contents, path, repo, ext, mapper, branch=branch)
     if ext in DOC_CSV_EXTS or ext in DOC_TSV_EXTS:
         delimiter = ',' if ext in DOC_CSV_EXTS else '\t'
-        return _chunk_csv(ctx, contents, path, repo, delimiter, mapper)
+        return _chunk_csv(ctx, contents, path, repo, delimiter, mapper, branch=branch)
 
-    return _chunk_plaintext(ctx, contents, path, repo, mapper)
+    return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
 
 
 def _chunk_markdown(
@@ -261,10 +261,11 @@ def _chunk_markdown(
     repo: str,
     language: str,
     mapper: LineMapper,
+    branch: str | None = None,
 ) -> List[Chunk]:
     blocks = _parse_markdown_blocks(ctx)
     if not blocks:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper)
+        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
 
     segments: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
@@ -296,7 +297,7 @@ def _chunk_markdown(
         segments.append(current)
 
     segments = _merge_small_segments(ctx, segments)
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper)
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _skip_ws(text: str, idx: int) -> int:
@@ -453,11 +454,11 @@ def _json_spans(ctx: DocContext, ext: str) -> List[Tuple[int, int, List[str]]]:
 
 
 def _chunk_json(
-    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper
+    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     spans = _json_spans(ctx, ext)
     if not spans:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper)
+        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
 
     segments: List[Dict[str, Any]] = []
     for start_char, end_char, breadcrumb in spans:
@@ -472,7 +473,7 @@ def _chunk_json(
 
     segments = _merge_small_segments(ctx, segments)
     language = "jsonl" if ext in {"jsonl", "ndjson"} else "json"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper)
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _yaml_toml_heading(text: str) -> str:
@@ -496,7 +497,7 @@ def _yaml_toml_heading(text: str) -> str:
 
 
 def _chunk_yaml_toml(
-    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper
+    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     block_tag = "yaml" if ext in DOC_YAML_EXTS else "toml"
     lines = ctx.lines
@@ -529,7 +530,7 @@ def _chunk_yaml_toml(
         i = j + 1
 
     if not blocks:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper)
+        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
 
     segments: List[Dict[str, Any]] = []
     for block in blocks:
@@ -545,11 +546,11 @@ def _chunk_yaml_toml(
 
     segments = _merge_small_segments(ctx, segments)
     language = "yaml" if ext in DOC_YAML_EXTS else "toml"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper)
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _chunk_csv(
-    ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str, mapper: LineMapper
+    ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     if not ctx.text:
         return []
@@ -565,11 +566,11 @@ def _chunk_csv(
 
     segments = _merge_small_segments(ctx, segments)
     language = "csv" if delimiter == ',' else "tsv"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper)
+    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _chunk_plaintext(
-    ctx: DocContext, contents: bytes, path: str, repo: str, mapper: LineMapper
+    ctx: DocContext, contents: bytes, path: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     if not ctx.text:
         return []
@@ -589,7 +590,7 @@ def _chunk_plaintext(
 
 
 def _chunk_plaintext_bytes(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper
+    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     total = len(contents)
     if total == 0:
@@ -635,6 +636,7 @@ def _chunk_plaintext_bytes(
             mapper,
             signature=signature,
             metadata=metadata,
+            branch=branch,
         )
         chunks.append(chunk)
     return chunks
@@ -947,6 +949,7 @@ def _segments_to_chunks(
     language: str,
     segments: List[Dict[str, Any]],
     mapper: LineMapper,
+    branch: str | None = None,
 ) -> List[Chunk]:
     chunks: List[Chunk] = []
     prev_end_bytes: Optional[int] = None
@@ -1014,6 +1017,7 @@ def _segments_to_chunks(
             mapper,
             signature=signature,
             metadata=metadata,
+            branch=branch,
         )
         chunks.append(chunk)
         prev_end_bytes = end_bytes
@@ -1087,7 +1091,7 @@ def _build_doc_context(contents: bytes, mapper: LineMapper) -> Optional[DocConte
 
 
 def _chunk_code(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper
+    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> Iterable[Chunk]:
     """
     Chunk code via Tree-sitter:
@@ -1100,7 +1104,7 @@ def _chunk_code(
         parser = get_parser(language)
         tree = parser.parse(contents)
     except Exception:
-        return list(_chunk_fallback(contents, path, language, repo, mapper))
+        return list(_chunk_fallback(contents, path, language, repo, mapper, branch=branch))
 
     root = tree.root_node
     pkg = _get_package_name(contents, root, language)
@@ -1116,7 +1120,7 @@ def _chunk_code(
     exec_nodes = sorted(_unique_by_span(methods + ctors + inits + accessors),
                         key=lambda n: (n.start_byte, n.end_byte))
     for n in exec_nodes:
-        for ch in _build_method_like_chunks(n, contents, path, language, repo, pkg, mapper):
+        for ch in _build_method_like_chunks(n, contents, path, language, repo, pkg, mapper, branch=branch):
             chunks.append(ch)
 
     top_level_types = [t for t in types if _is_top_level_type(t, language)]
@@ -1142,12 +1146,13 @@ def _chunk_code(
                 enums=enums,
                 anno_elems=anno_elems,
                 record_comps=record_comps,
+                branch=branch,
             )
         )
 
     # If Tree-sitter produced no actionable nodes, fall back to size-based chunking
     if not chunks:
-        return list(_chunk_fallback(contents, path, language, repo, mapper))
+        return list(_chunk_fallback(contents, path, language, repo, mapper, branch=branch))
 
     return chunks
 
@@ -1351,6 +1356,7 @@ def _build_method_like_chunks(
     repo: str,
     pkg: str,
     mapper: LineMapper,
+    branch: str | None = None,
 ) -> List[Chunk]:
     """
     Emit 1..N chunks for a method/function/ctor/init/accessor.
@@ -1375,7 +1381,7 @@ def _build_method_like_chunks(
         signature = _fqn_for_node(node, contents, path, language, pkg)
         return [
             _make_chunk(
-                contents, unit_start, unit_end, path, language, repo, mapper, signature=signature
+                contents, unit_start, unit_end, path, language, repo, mapper, signature=signature, branch=branch
             )
         ]
 
@@ -1405,6 +1411,7 @@ def _build_method_like_chunks(
                 repo,
                 mapper,
                 signature=(f"{fqn}#part{i + 1}" if len(parts) > 1 else fqn),
+                branch=branch,
             )
         )
     return chunks
@@ -1423,6 +1430,7 @@ def _build_class_metadata_chunk(
     enums: List[Node],
     anno_elems: List[Node],
     record_comps: List[Node],
+    branch: str | None = None,
 ) -> Chunk:
     """
     Emit one metadata chunk per top-level type (no bodies).
@@ -1469,6 +1477,7 @@ def _build_class_metadata_chunk(
     return Chunk(
         chunk=meta_text,
         repo=repo,
+        branch=branch,
         path=path,
         language=language,
         start_rc=mapper.byte_to_point(t_start),
@@ -1764,6 +1773,7 @@ def _make_chunk(
     mapper: LineMapper,
     signature: str = "",
     metadata: Optional[Dict[str, Any]] = None,
+    branch: str | None = None,
 ) -> Chunk:
     """
     Build a Chunk from a byte range, computing row/col positions efficiently.
@@ -1775,6 +1785,7 @@ def _make_chunk(
     return Chunk(
         chunk=text,
         repo=repo,
+        branch=branch,
         path=path,
         language=language,
         start_rc=start_rc,

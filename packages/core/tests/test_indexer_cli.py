@@ -51,7 +51,7 @@ if "sentence_transformers" not in sys.modules:
     )
 
 if "chunker" not in sys.modules:
-    sys.modules["chunker"] = types.SimpleNamespace(chunk_file=lambda path, repo: [])
+    sys.modules["chunker"] = types.SimpleNamespace(chunk_file=lambda path, repo, branch=None: [])
 
 try:
     import text_detection  # type: ignore  # noqa: F401
@@ -118,7 +118,7 @@ class ProcessFilesTests(unittest.TestCase):
 
         original_chunk_file = Indexer.chunker.chunk_file
 
-        def fake_chunk_file(path, repo):
+        def fake_chunk_file(path, repo, branch=None):
             return [StubChunk(path)]
 
         Indexer.chunker.chunk_file = fake_chunk_file
