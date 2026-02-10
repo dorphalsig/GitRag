@@ -142,6 +142,10 @@ def test_qwen3_reranker_singleton_loads_model_once() -> None:
         Qwen3Reranker._model = None
         Qwen3Reranker._tokenizer = None
         Qwen3Reranker._load_error = None
+        Qwen3Reranker._loaded_model_name = None
+        Qwen3Reranker._loaded_attn_implementation = None
+        Qwen3Reranker._load_error_model_name = None
+        Qwen3Reranker._load_error_attn_implementation = None
 
         r1 = Qwen3Reranker()
         r2 = Qwen3Reranker()
@@ -170,6 +174,10 @@ def test_qwen3_reranker_load_failure_sets_error() -> None:
         Qwen3Reranker._model = None
         Qwen3Reranker._tokenizer = None
         Qwen3Reranker._load_error = None
+        Qwen3Reranker._loaded_model_name = None
+        Qwen3Reranker._loaded_attn_implementation = None
+        Qwen3Reranker._load_error_model_name = None
+        Qwen3Reranker._load_error_attn_implementation = None
         with pytest.raises(RuntimeError, match="Failed to load"):
             Qwen3Reranker()
 
@@ -181,7 +189,33 @@ def test_qwen3_reranker_forwards_attention_implementation() -> None:
         Qwen3Reranker._model = None
         Qwen3Reranker._tokenizer = None
         Qwen3Reranker._load_error = None
+        Qwen3Reranker._loaded_model_name = None
+        Qwen3Reranker._loaded_attn_implementation = None
+        Qwen3Reranker._load_error_model_name = None
+        Qwen3Reranker._load_error_attn_implementation = None
 
         Qwen3Reranker(attn_implementation="sdpa")
 
     assert model_loader.call_args.kwargs["attn_implementation"] == "sdpa"
+
+
+def test_qwen3_reranker_reloads_when_model_configuration_changes() -> None:
+    with mock.patch("transformers.AutoTokenizer.from_pretrained", return_value=mock.MagicMock()) as tok_loader, mock.patch(
+        "transformers.AutoModelForSequenceClassification.from_pretrained",
+        return_value=mock.MagicMock(eval=mock.MagicMock()),
+    ) as model_loader:
+        Qwen3Reranker._model = None
+        Qwen3Reranker._tokenizer = None
+        Qwen3Reranker._load_error = None
+        Qwen3Reranker._loaded_model_name = None
+        Qwen3Reranker._loaded_attn_implementation = None
+        Qwen3Reranker._load_error_model_name = None
+        Qwen3Reranker._load_error_attn_implementation = None
+
+        Qwen3Reranker(model_name="model-a", attn_implementation="eager")
+        Qwen3Reranker(model_name="model-b", attn_implementation="sdpa")
+
+    assert tok_loader.call_count == 2
+    assert model_loader.call_count == 2
+    assert model_loader.call_args.kwargs["attn_implementation"] == "sdpa"
+    assert model_loader.call_args.args[0] == "model-b"

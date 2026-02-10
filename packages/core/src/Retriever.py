@@ -25,6 +25,10 @@ class Qwen3Reranker:
     _model: Any = None
     _tokenizer: Any = None
     _load_error: Optional[Exception] = None
+    _loaded_model_name: Optional[str] = None
+    _loaded_attn_implementation: Optional[str] = None
+    _load_error_model_name: Optional[str] = None
+    _load_error_attn_implementation: Optional[str] = None
     _lock = Lock()
 
     def __init__(
@@ -46,12 +50,26 @@ class Qwen3Reranker:
         model_name: str = "Qwen/Qwen3-Reranker-0.6B",
         attn_implementation: str = "eager",
     ) -> None:
-        if cls._model is not None and cls._tokenizer is not None:
+        if (
+            cls._model is not None
+            and cls._tokenizer is not None
+            and cls._loaded_model_name == model_name
+            and cls._loaded_attn_implementation == attn_implementation
+        ):
             return
         with cls._lock:
-            if cls._model is not None and cls._tokenizer is not None:
+            if (
+                cls._model is not None
+                and cls._tokenizer is not None
+                and cls._loaded_model_name == model_name
+                and cls._loaded_attn_implementation == attn_implementation
+            ):
                 return
-            if cls._load_error is not None:
+            if (
+                cls._load_error is not None
+                and cls._load_error_model_name == model_name
+                and cls._load_error_attn_implementation == attn_implementation
+            ):
                 raise RuntimeError("Qwen3 reranker unavailable") from cls._load_error
             try:
                 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -63,8 +81,15 @@ class Qwen3Reranker:
                     attn_implementation=attn_implementation,
                 )
                 cls._model.eval()
+                cls._loaded_model_name = model_name
+                cls._loaded_attn_implementation = attn_implementation
+                cls._load_error = None
+                cls._load_error_model_name = None
+                cls._load_error_attn_implementation = None
             except Exception as exc:  # pragma: no cover - environment-dependent
                 cls._load_error = exc
+                cls._load_error_model_name = model_name
+                cls._load_error_attn_implementation = attn_implementation
                 raise RuntimeError("Failed to load Qwen3 reranker model") from exc
 
     def score(self, query: str, candidates: Sequence[Chunk]) -> List[float]:
