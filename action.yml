@@ -48,8 +48,9 @@ runs:
         
         # If not a full scan, pass the commit range
         if [ "${{ inputs.full_index }}" != "true" ]; then
-          # github.event.before is the commit before the push
-          # github.sha is the current commit
-          ARGS="$ARGS --from-sha ${{ github.event.before }} --to-sha ${{ github.sha }}"
-        fi        
+          BEFORE="${{ github.event.before }}"
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            ARGS="$ARGS --from-sha $BEFORE --to-sha ${{ github.sha }}"
+          fi
+        fi
         python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS

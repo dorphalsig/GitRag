@@ -33,26 +33,28 @@ Automate your index updates on every push. Create `.github/workflows/index.yml`:
 
 ```yaml
 name: GitRag Indexing
+
 on:
   push:
-    branches: [main]
+    branches: [ "master" ]
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Perform a full repository scan?'
+        type: boolean
+        default: false
 
 jobs:
   index:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2 # Required to calculate the git diff
-
-      - name: Run GitRag Indexer
-        uses: dorphalsig/gitrag@master
-        with:
-          repo: ${{ github.repository }}
-          branch: ${{ github.ref_name }} # Optional: track branch for filtering
-          turso_database_url: ${{ secrets.TURSO_DATABASE_URL }}
-          turso_auth_token: ${{ secrets.TURSO_AUTH_TOKEN }}
-          full_index: false # Use 'true' for the initial repo sync
+    uses: dorphalsig/gitrag/.github/workflows/indexer.yml@master
+    with:
+      repo: ${{ github.repository }}
+      branch: ${{ github.ref_name }}
+      db_provider: "libsql" or "postgres"
+      full_index: ${{ inputs.full_scan || false }}
+    secrets:
+      DATABASE_URL: libsql://<db_name>.aws-eu-west-1.turso.io OR postgres://user@host/db
+      DB_AUTH_TOKEN: ${{ secrets.dark }}
 ```
 
 ### Hugging Face Spaces (The Retriever)

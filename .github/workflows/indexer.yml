@@ -3,12 +3,6 @@ name: GitRag Reusable Indexer
 on:
   workflow_call:
     inputs:
-      repo:
-        required: true
-        type: string
-      branch:
-        required: true
-        type: string
       db_provider:
         required: false
         type: string
@@ -24,7 +18,7 @@ on:
         required: true
 
 concurrency:
-  group: gitrag-index-${{ inputs.repo }}-${{ inputs.branch }}
+  group: ${{ github.workflow }}-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -37,10 +31,10 @@ jobs:
           fetch-depth: 0 # Required for git diff
 
       - name: Run GitRag Indexer
-        uses: dorphalsig/gitrag@master 
+        uses: dorphalsig/gitrag@master
         with:
-          repo: ${{ inputs.repo }}
-          branch: ${{ inputs.branch }}
+          repo: ${{ github.repository }}
+          branch: ${{ github.ref_name }}
           db_provider: ${{ inputs.db_provider }}
           database_url: ${{ secrets.DATABASE_URL }}
           db_auth_token: ${{ secrets.DB_AUTH_TOKEN }}
