@@ -1,27 +1,25 @@
-name: Sync Branches (Marketplace)
+name: Sync Master to NT
 
 on:
+  workflow_dispatch:
   push:
     branches:
+      - master
       - main
 
 jobs:
-  sync-branches:
+  sync-branch:
     runs-on: ubuntu-latest
-    strategy:
-      # Prevent one failure from stopping the others
-      fail-fast: false
-      matrix:
-        target_branch: ['NT'] 
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Merge main into ${{ matrix.target_branch }}
+        with:
+          fetch-depth: 0
+
+      - name: Merge master into NT
         uses: devmasx/merge-branch@v1.4.0
         with:
           type: now
-          from_branch: main
-          target_branch: ${{ matrix.target_branch }}
+          from_branch: master
+          target_branch: NT
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: 'merge' (default) or 'rebase'
-          message: "chore: merge main into ${{ matrix.target_branch }}"
+          message: "chore: sync master into NT"
