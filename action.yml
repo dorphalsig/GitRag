@@ -29,7 +29,13 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: "3.11"
-    
+        cache: "pip"
+        cache-dependency-path: |
+          requirements.txt
+          packages/**/requirements.txt
+          pyproject.toml
+          poetry.lock
+          uv.lock    
     - name: Install dependencies
       shell: bash
       run: python -m pip install -r ${{ github.action_path }}/requirements.txt
