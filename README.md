@@ -74,9 +74,6 @@ Deploy as a **Docker** Space to host a search API or MCP server. For this use th
 
 *Note: On free CPU tiers, expect a ~10 second delay for the first query as the model loads into memory.* ☕
 
-## ⚠️ Compatibility Warning
-**Embeddings are model-specific.** If you change your embedding model (e.g., from Qwen 2.5 to 3, or from 0.6B to 8B), you **must** perform a full re-index (`--full`). Mixing vectors from different versions or sizes will result in zero retrieval accuracy.
-
 ## 🏗 Supported Environments
 * **Code**: Kotlin, Java, Dart, Python, and more via Tree-sitter.
 * **Data**: Markdown (with breadcrumbs), JSON/JSONL, YAML, XML, TOML.
