@@ -40,7 +40,7 @@ def _run_git(args: List[str]) -> str:
     """
     try:
         out = subprocess.run(
-            ["git", *args],
+            ["git", "-c", "core.quotePath=false", *args],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -58,7 +58,7 @@ def _resolve_range(from_sha: str | None = None, to_sha: str | None = None) -> Tu
     """Return (from_ref, to_ref). Prefer args, fallback to last commit."""
     if from_sha and to_sha:
         return from_sha, to_sha
-    
+
     # Fallback to checking just the last commit
     try:
         _run_git(["rev-parse", "HEAD^"])
@@ -66,6 +66,7 @@ def _resolve_range(from_sha: str | None = None, to_sha: str | None = None) -> Tu
     except Exception:
         empty_tree = _run_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
         return empty_tree, "HEAD"
+
 
 def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dict[str, str]]]:
     """Summarize file changes in a commit range.
@@ -104,7 +105,7 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
             continue
 
         status = rec[:tab]
-        path1 = rec[tab + 1 :]
+        path1 = rec[tab + 1:]
 
         if status.startswith(("R", "C")):
             if i + 1 < len(tokens):
@@ -130,7 +131,6 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
     return to_process, to_delete, actions
 
 
-
 def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) -> Set[str]:
     """Filter candidate paths down to text files using a shared binary detector."""
     if not paths:
@@ -145,9 +145,6 @@ def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) 
         except Exception as exc:  # pragma: no cover - defensive log only
             logger.debug("Binary detection failed for %s: %s", p, exc)
     return text
-
-
-
 
 
 def _collect_full_repo(detector: BinaryDetector) -> Tuple[Set[str], List[str], List[Dict[str, str]]]:
@@ -229,7 +226,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
 
     try:
         texts = [c.chunk for c in all_chunks]
-        embeddings = calc.calculate_batch(texts)          # single batched call
+        embeddings = calc.calculate_batch(texts)  # single batched call
         for chunk, emb in zip(all_chunks, embeddings):
             object.__setattr__(chunk, "embeddings", emb)  # Chunk is frozen
         persist.persist_batch(all_chunks)
@@ -254,7 +251,7 @@ def main() -> None:
     parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
     parser.add_argument("--branch", default=None, help="Optional branch name to attach to indexed chunks.")
     parser.add_argument("--from-sha", default=None, help="Start commit SHA for diff range")
-    parser.add_argument("--to-sha", default=None, help="End commit SHA for diff range")    
+    parser.add_argument("--to-sha", default=None, help="End commit SHA for diff range")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
