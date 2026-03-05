@@ -9,7 +9,13 @@ from typing import Any, List, Optional, Protocol, Sequence
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunk import Chunk
 from Persist import PersistenceAdapter
-
+from constants import (
+    DEFAULT_ATTN_IMPLEMENTATION,
+    DEFAULT_INITIAL_RETRIEVAL_LIMIT,
+    DEFAULT_RERANK_TASK_INSTRUCTION,
+    DEFAULT_RERANKER_MODEL,
+    RETRIEVAL_QUERY_PREFIX,
+)
 
 class Reranker(Protocol):
     def score(self, query: str, candidates: Sequence[Chunk]) -> List[float]: ...
@@ -33,22 +39,20 @@ class Qwen3Reranker:
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-Reranker-0.6B",
+        model_name: str = DEFAULT_RERANKER_MODEL,
         task_instruction: str | None = None,
-        attn_implementation: str = "eager",
+        attn_implementation: str = DEFAULT_ATTN_IMPLEMENTATION,
     ) -> None:
         self._model_name = model_name
-        self._task_instruction = task_instruction or (
-            "Given a user query and a code/document chunk, output a relevance score for retrieval reranking."
-        )
+        self._task_instruction = task_instruction or DEFAULT_RERANK_TASK_INSTRUCTION
         self._attn_implementation = attn_implementation
         self._ensure_loaded(model_name=model_name, attn_implementation=attn_implementation)
 
     @classmethod
     def _ensure_loaded(
         cls,
-        model_name: str = "Qwen/Qwen3-Reranker-0.6B",
-        attn_implementation: str = "eager",
+        model_name: str = DEFAULT_RERANKER_MODEL,
+        attn_implementation: str = DEFAULT_ATTN_IMPLEMENTATION,
     ) -> None:
         if (
             cls._model is not None
@@ -126,7 +130,7 @@ class Retriever:
     persistence: PersistenceAdapter
     embedding_calculator: EmbeddingCalculator
     reranker: Optional[Reranker] = None
-    initial_limit: int = 50
+    initial_limit: int = DEFAULT_INITIAL_RETRIEVAL_LIMIT
 
     def retrieve(
         self,
@@ -140,7 +144,7 @@ class Retriever:
         if not normalized_query:
             return []
 
-        query_embedding = self._calculate_query_embedding(normalized_query)
+        query_embedding = self._calculate_query_embedding(RETRIEVAL_QUERY_PREFIX + normalized_query)
         candidates = self.persistence.search(
             query_embedding=query_embedding,
             query_text=normalized_query,

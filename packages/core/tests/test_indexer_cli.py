@@ -106,8 +106,15 @@ class ProcessFilesTests(unittest.TestCase):
                 self.embeddings = calculator.calculate(self.chunk)
 
         class StubCalc:
+            @property
+            def dimensions(self) -> int:
+                return 4
+
             def calculate(self, chunk: str) -> bytes:
                 return chunk.encode("utf-8")
+
+            def calculate_batch(self, chunks: list[str]) -> list[bytes]:
+                return [self.calculate(c) for c in chunks]
 
         class StubPersist:
             def __init__(self):

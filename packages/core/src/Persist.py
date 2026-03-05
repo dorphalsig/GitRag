@@ -7,6 +7,8 @@ from array import array
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
+import numpy as np
+
 try:  # pragma: no cover - dependency guard for tooling envs
     from sqlalchemy import bindparam, create_engine, text
     from sqlalchemy.engine import Engine
@@ -20,6 +22,13 @@ else:  # pragma: no cover - success path
     SQLALCHEMY_IMPORT_ERROR = None
 
 from Chunk import Chunk
+from constants import (
+    DEFAULT_FTS_TABLE_SUFFIX,
+    DEFAULT_TABLE_NAME,
+    EMBEDDING_DIMENSIONS,
+    HYBRID_SEARCH_KEYWORD_WEIGHT,
+    HYBRID_SEARCH_VECTOR_WEIGHT,
+)
 from persistence_registry import get_persistence_adapter, register_persistence_adapter
 
 logger = logging.getLogger(__name__)
@@ -56,10 +65,10 @@ class LibsqlConfig(DBConfig):
         *,
         database_url: str,
         auth_token: Optional[str] = None,
-        table: str = "chunks",
+        table: str = DEFAULT_TABLE_NAME,
         fts_table: Optional[str] = None,
     ) -> "LibsqlConfig":
-        resolved_fts = fts_table or f"{table}_fts"
+        resolved_fts = fts_table or f"{table}{DEFAULT_FTS_TABLE_SUFFIX}"
         return cls(
             provider="libsql",
             url=database_url,
@@ -76,7 +85,7 @@ class LibsqlConfig(DBConfig):
 
     @property
     def table(self) -> str:
-        return self.table_map.get("chunks", "chunks")
+        return self.table_map.get("chunks", DEFAULT_TABLE_NAME)
 
     @property
     def fts_table(self) -> Optional[str]:
@@ -84,7 +93,7 @@ class LibsqlConfig(DBConfig):
 
     @property
     def resolved_fts_table(self) -> str:
-        return self.fts_table or f"{self.table}_fts"
+        return self.fts_table or f"{self.table}{DEFAULT_FTS_TABLE_SUFFIX}"
 
 
 class PersistInLibsql(PersistenceAdapter):
@@ -94,7 +103,7 @@ class PersistInLibsql(PersistenceAdapter):
         self,
         *,
         cfg: DBConfig,
-        dim: int,
+        dim: int = EMBEDDING_DIMENSIONS,
         engine: Optional[Engine] = None,
         engine_factory: Optional[Callable[[], Engine]] = None,
         **_: Any,
@@ -105,8 +114,8 @@ class PersistInLibsql(PersistenceAdapter):
             raise TypeError("cfg.provider must be 'libsql' for PersistInLibsql")
         self._cfg = cfg
         self._dim = dim
-        self._table = cfg.table_map.get("chunks", "chunks")
-        self._fts_table = cfg.table_map.get("chunks_fts", f"{self._table}_fts")
+        self._table = cfg.table_map.get("chunks", DEFAULT_TABLE_NAME)
+        self._fts_table = cfg.table_map.get("chunks_fts", f"{self._table}{DEFAULT_FTS_TABLE_SUFFIX}")
         if engine is not None:
             self._engine = engine
             self._owns_engine = False
@@ -135,26 +144,16 @@ class PersistInLibsql(PersistenceAdapter):
     def delete_batch(self, paths: List[str]) -> None:
         if not paths:
             return
-        select_stmt = (
-            text(f"SELECT id FROM {self._table} WHERE path IN :paths")
-            .bindparams(bindparam("paths", expanding=True))
-        )
-        with self._engine.connect() as conn:
-            rows = conn.execute(select_stmt, {"paths": tuple(paths)}).mappings().all()
-        ids = [row.get("id") for row in rows if row.get("id")]
-        if not ids:
-            return
-
         delete_stmt = text(
-            f"DELETE FROM {self._table} WHERE id IN :ids"
-        ).bindparams(bindparam("ids", expanding=True))
+            f"DELETE FROM {self._table} WHERE path IN :paths"
+        ).bindparams(bindparam("paths", expanding=True))
         delete_fts_stmt = text(
-            f"DELETE FROM {self._fts_table} WHERE id IN :ids"
-        ).bindparams(bindparam("ids", expanding=True))
+            f"DELETE FROM {self._fts_table} WHERE id NOT IN (SELECT id FROM {self._table})"
+        )
 
         with self._engine.begin() as conn:
-            conn.execute(delete_fts_stmt, {"ids": tuple(ids)})
-            conn.execute(delete_stmt, {"ids": tuple(ids)})
+            conn.execute(delete_stmt, {"paths": tuple(paths)})
+            conn.execute(delete_fts_stmt)
 
     def close(self) -> None:
         if getattr(self, "_owns_engine", True):
@@ -185,7 +184,7 @@ class PersistInLibsql(PersistenceAdapter):
         for row in keyword_rows:
             keyword_score = float(row.get("keyword_score") or 0.0)
             vector_score = self._vector_similarity(query_embedding, row.get("embedding"))
-            hybrid_score = (vector_score * 0.7) + (keyword_score * 0.3)
+            hybrid_score = (vector_score * HYBRID_SEARCH_VECTOR_WEIGHT) + (keyword_score * HYBRID_SEARCH_KEYWORD_WEIGHT)
             scored.append((hybrid_score, row))
 
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -235,8 +234,6 @@ class PersistInLibsql(PersistenceAdapter):
     def _build_engine(self) -> Engine:
         if create_engine is None:
             raise RuntimeError("SQLAlchemy is required for libsql persistence")
-        if create_engine is None:
-            raise RuntimeError("SQLAlchemy is required for libsql persistence")
         url = self._cfg.url.rstrip("?")
         connect_args: Dict[str, Any] = {}
         if self._cfg.auth_token:
@@ -247,70 +244,58 @@ class PersistInLibsql(PersistenceAdapter):
             connect_args=connect_args,
         )
 
-    def _keyword_search(
-        self,
-        *,
-        query: str,
-        limit: int,
-        repo: str | None = None,
-        branch: str | None = None,
-    ) -> List[Dict[str, Any]]:
-        select_sql = (
-            f"SELECT c.id, c.repo, c.branch, c.path, c.language, c.start_row, c.start_col, c.end_row, c.end_col, "
-            f"c.start_bytes, c.end_bytes, c.chunk, c.embedding, -bm25({self._fts_table}) AS keyword_score "
+    def _keyword_search(self, *, query: str, limit: int, repo: str | None = None, branch: str | None = None) -> List[
+        Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+
+        # Build filter clauses once, reuse for both FTS and fallback
+        filter_clauses = []
+        if repo is not None:
+            filter_clauses.append("c.repo = :repo")
+            params["repo"] = repo
+        if branch is not None:
+            filter_clauses.append("c.branch = :branch")
+            params["branch"] = branch
+
+        extra = (" AND " + " AND ".join(filter_clauses)) if filter_clauses else ""
+
+        fts_sql = text(
+            f"SELECT c.id, c.repo, c.branch, c.path, c.language, c.start_row, c.start_col, "
+            f"c.end_row, c.end_col, c.start_bytes, c.end_bytes, c.chunk, c.embedding, "
+            f"-bm25({self._fts_table}) AS keyword_score "
             f"FROM {self._fts_table} AS f "
             f"JOIN {self._table} AS c ON c.id = f.id "
-            f"WHERE f.chunk MATCH :query "
+            f"WHERE f.chunk MATCH :query{extra} "
             f"ORDER BY bm25({self._fts_table}) ASC LIMIT :limit"
         )
-        fallback_sql = (
+
+        fallback_clauses = []
+        if repo is not None:
+            fallback_clauses.append("repo = :repo")
+        if branch is not None:
+            fallback_clauses.append("branch = :branch")
+        fallback_extra = (" AND " + " AND ".join(fallback_clauses)) if fallback_clauses else ""
+
+        fallback_sql = text(
             f"SELECT id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
             f"start_bytes, end_bytes, chunk, embedding, "
             f"CASE WHEN lower(chunk) LIKE lower(:term) THEN 1 ELSE 0 END AS keyword_score "
             f"FROM {self._table} "
-            f"WHERE lower(chunk) LIKE lower(:term) "
+            f"WHERE lower(chunk) LIKE lower(:term){fallback_extra} "
             f"ORDER BY keyword_score DESC LIMIT :limit"
         )
-
-        where_filters = []
-        params: Dict[str, Any] = {"limit": limit}
-        if repo is not None:
-            where_filters.append("c.repo = :repo")
-            params["repo"] = repo
-        if branch is not None:
-            where_filters.append("c.branch = :branch")
-            params["branch"] = branch
-
-        fts_where = ""
-        if where_filters:
-            fts_where = " AND " + " AND ".join(where_filters)
-
-        fallback_filters = []
-        fallback_params: Dict[str, Any] = {"limit": limit}
-        if repo is not None:
-            fallback_filters.append("repo = :repo")
-            fallback_params["repo"] = repo
-        if branch is not None:
-            fallback_filters.append("branch = :branch")
-            fallback_params["branch"] = branch
-
-        fallback_where = ""
-        if fallback_filters:
-            fallback_where = " AND " + " AND ".join(fallback_filters)
 
         with self._engine.connect() as conn:
             if query:
                 try:
-                    fts_sql = select_sql.replace("WHERE f.chunk MATCH :query ", f"WHERE f.chunk MATCH :query{fts_where} ")
-                    rows = conn.execute(text(fts_sql), {**params, "query": query}).mappings().all()
+                    rows = conn.execute(fts_sql, {**params, "query": query}).mappings().all()
                     if rows:
                         return [dict(row) for row in rows]
                 except Exception:
-                    logger.debug("FTS query unavailable, falling back to LIKE", exc_info=True)
+                    logger.debug("FTS unavailable, falling back to LIKE", exc_info=True)
 
             term = f"%{query}%" if query else "%"
-            like_sql = fallback_sql.replace("WHERE lower(chunk) LIKE lower(:term) ", f"WHERE lower(chunk) LIKE lower(:term){fallback_where} ")
-            rows = conn.execute(text(like_sql), {**fallback_params, "term": term}).mappings().all()
+            rows = conn.execute(fallback_sql, {**params, "term": term}).mappings().all()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -324,7 +309,7 @@ class PersistInLibsql(PersistenceAdapter):
         q = query_embedding[: len(vals)]
         if not q:
             return 0.0
-        dot = sum(a * b for a, b in zip(q, vals))
+        dot = float(np.dot(q, vals))
         q_norm = math.sqrt(sum(a * a for a in q))
         v_norm = math.sqrt(sum(b * b for b in vals[: len(q)]))
         if q_norm == 0 or v_norm == 0:
@@ -351,7 +336,7 @@ class PersistInLibsql(PersistenceAdapter):
 def _libsql_factory(
     *,
     cfg: DBConfig,
-    dim: int,
+    dim: int = EMBEDDING_DIMENSIONS,
     engine: Optional[Engine] = None,
     engine_factory: Optional[Callable[[], Engine]] = None,
     **kwargs: Any,
@@ -375,7 +360,7 @@ def create_persistence_adapter(
     adapter: str,
     *,
     cfg: DBConfig,
-    dim: int,
+    dim: int = EMBEDDING_DIMENSIONS,
     **kwargs: Any,
 ) -> PersistenceAdapter:
     key = (adapter or "libsql").strip().lower()

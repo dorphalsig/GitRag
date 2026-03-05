@@ -11,8 +11,15 @@ import Indexer
 
 
 class _Calc:
+    @property
+    def dimensions(self) -> int:
+        return 2
+
     def calculate(self, _: str) -> bytes:
         return array("f", [1.0, 0.0]).tobytes()
+
+    def calculate_batch(self, texts: list[str]) -> list[bytes]:
+        return [self.calculate(t) for t in texts]
 
 
 class _Persist:
@@ -56,7 +63,7 @@ def test_process_files_forwards_branch_to_chunker_and_persisted_chunks(monkeypat
 def test_main_threads_branch_argument_end_to_end(monkeypatch) -> None:
     persist = _Persist()
 
-    monkeypatch.setattr(Indexer, "_resolve_range", lambda: ("HEAD^", "HEAD"))
+    monkeypatch.setattr(Indexer, "_resolve_range", lambda *a, **kw: ("HEAD^", "HEAD"))
     monkeypatch.setattr(
         Indexer,
         "_collect_changes",

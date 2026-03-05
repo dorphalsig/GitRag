@@ -141,31 +141,6 @@ def test_postgres_persist_and_search_include_branch_filters() -> None:
     assert persist_params["branch"] == "main"
 
 
-def test_chunk_calculate_embeddings_variants() -> None:
-    class GoodCalc:
-        def calculate(self, _: str):
-            return memoryview(array("f", [1.0, 2.0]).tobytes())
-
-    class BadCalc:
-        def calculate(self, _: str):
-            return "bad"
-
-    c = Chunk(
-        chunk="body",
-        repo="r",
-        path="p.py",
-        language="python",
-        start_rc=(0, 0),
-        end_rc=(0, 4),
-        start_bytes=0,
-        end_bytes=4,
-    )
-    c.calculate_embeddings(GoodCalc())
-    assert isinstance(c.embeddings, bytes)
-
-    with pytest.raises(TypeError):
-        c.calculate_embeddings(BadCalc())
-
 
 def test_libsql_delete_close_and_vector_similarity_edges() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)

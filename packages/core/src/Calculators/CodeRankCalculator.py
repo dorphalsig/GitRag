@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from constants import EMBEDDING_BATCH_SIZE, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
 from .EmbeddingCalculator import EmbeddingCalculator
 
 
@@ -17,9 +18,6 @@ class CodeRankCalculator(EmbeddingCalculator):
     Returns float32 embeddings as bytes (little-endian).
     """
 
-    MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
-    EMBEDDING_DIMENSIONS = 1024
-
     def __init__(self, device: Optional[str] = None) -> None:
         self._model = None
         self._device = device
@@ -29,19 +27,19 @@ class CodeRankCalculator(EmbeddingCalculator):
         """Load the Qwen3 embedding model."""
         try:
             if self._device:
-                self._model = SentenceTransformer(self.MODEL_ID, trust_remote_code=True, device=self._device)
+                self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device=self._device)
             else:
-                self._model = SentenceTransformer(self.MODEL_ID, trust_remote_code=True)
-            logger.info("Loaded embedding model from %s", self.MODEL_ID)
+                self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
+            logger.info("Loaded embedding model from %s", EMBEDDING_MODEL_ID)
         except Exception as e:
-            msg = f"Failed to load embedding model: {self.MODEL_ID}"
+            msg = f"Failed to load embedding model: {EMBEDDING_MODEL_ID}"
             logger.error("%s; error: %r", msg, e)
             raise RuntimeError(msg) from e
 
     @property
     def dimensions(self) -> int:
         """Return the native embedding dimension for Qwen3-Embedding-0.6B."""
-        return self.EMBEDDING_DIMENSIONS
+        return EMBEDDING_DIMENSIONS
 
     def calculate(self, chunk: str) -> bytes:
         """
@@ -49,10 +47,10 @@ class CodeRankCalculator(EmbeddingCalculator):
         """
         vec = self._model.encode(chunk, normalize_embeddings=True)
         arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-        if arr.shape[0] != self.EMBEDDING_DIMENSIONS:
+        if arr.shape[0] != EMBEDDING_DIMENSIONS:
             raise ValueError(
-                f"Unexpected embedding dimension {arr.shape[0]} for {self.MODEL_ID}; "
-                f"expected {self.EMBEDDING_DIMENSIONS}"
+                f"Unexpected embedding dimension {arr.shape[0]} for {EMBEDDING_MODEL_ID}; "
+                f"expected {EMBEDDING_DIMENSIONS}"
             )
         return arr.tobytes()
 
@@ -60,13 +58,13 @@ class CodeRankCalculator(EmbeddingCalculator):
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,
-            batch_size=32,  # tune to available RAM
+            batch_size=EMBEDDING_BATCH_SIZE,  # tune to available RAM
             show_progress_bar=False,
         )
         results = []
         for vec in vecs:
             arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-            if arr.shape[0] != self.EMBEDDING_DIMENSIONS:
+            if arr.shape[0] != EMBEDDING_DIMENSIONS:
                 raise ValueError(f"Unexpected embedding dimension {arr.shape[0]}")
             results.append(arr.tobytes())
         return results

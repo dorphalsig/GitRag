@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 from Chunk import Chunk  # type: ignore
 from Persist import DBConfig, create_persistence_adapter  # type: ignore
 from PersistPostgres import PersistInPostgres  # type: ignore
+from constants import POSTGRES_FTS_LANGUAGE
 
 
 class PostgresPersistTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class PostgresPersistTests(unittest.TestCase):
         stmt = conn.execute.call_args.args[0]
         params = conn.execute.call_args.args[1]
         sql = str(stmt)
-        self.assertIn("VALUES (:id, :path, :repo, :chunk, :embedding, to_tsvector('english', :chunk))", sql)
+        self.assertIn(f"VALUES (:id, :repo, :branch, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :embedding, to_tsvector('{POSTGRES_FTS_LANGUAGE}', :chunk))", sql)
         self.assertIn("ON CONFLICT(id) DO UPDATE", sql)
         self.assertEqual(params["path"], "p.py")
         self.assertEqual(len(params["embedding"]), 1024)

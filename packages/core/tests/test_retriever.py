@@ -8,6 +8,7 @@ import pytest
 
 from Chunk import Chunk
 from Retriever import Qwen3Reranker, Retriever
+from constants import RETRIEVAL_QUERY_PREFIX
 
 
 class StubEmbeddingCalculator:
@@ -79,7 +80,7 @@ def test_retriever_uses_search_and_reranks() -> None:
     assert [c.path for c in out] == ["b.py"]
     assert persistence.calls[0]["limit"] == 50
     assert persistence.calls[0]["query_text"] == "find beta"
-    assert embed.calls == ["find beta"]
+    assert embed.calls == [RETRIEVAL_QUERY_PREFIX + "find beta"]
     assert reranker.calls[0][0] == "find beta"
 
 

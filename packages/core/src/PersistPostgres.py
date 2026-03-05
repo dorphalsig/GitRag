@@ -10,6 +10,13 @@ from sqlalchemy.engine import Engine
 
 from Chunk import Chunk
 from Persist import DBConfig, PersistenceAdapter
+from constants import (
+    DEFAULT_TABLE_NAME,
+    EMBEDDING_DIMENSIONS,
+    HYBRID_SEARCH_KEYWORD_WEIGHT,
+    HYBRID_SEARCH_VECTOR_WEIGHT,
+    POSTGRES_FTS_LANGUAGE,
+)
 from persistence_registry import register_persistence_adapter
 
 
@@ -20,7 +27,7 @@ class PersistInPostgres(PersistenceAdapter):
         self,
         *,
         cfg: DBConfig,
-        dim: int,
+        dim: int = EMBEDDING_DIMENSIONS,
         engine: Optional[Engine] = None,
         engine_factory: Optional[Callable[[], Engine]] = None,
         **_: Any,
@@ -29,7 +36,7 @@ class PersistInPostgres(PersistenceAdapter):
             raise TypeError("cfg.provider must be 'postgres' for PersistInPostgres")
         self._cfg = cfg
         self._dim = dim
-        self._table = cfg.table_map.get("chunks", "chunks")
+        self._table = cfg.table_map.get("chunks", DEFAULT_TABLE_NAME)
         self._engine = engine or (engine_factory or self._build_engine)()
         self._bootstrap()
 
@@ -55,10 +62,19 @@ class PersistInPostgres(PersistenceAdapter):
             f"""
             CREATE TABLE IF NOT EXISTS {self._table} (
               id TEXT PRIMARY KEY,
-              path TEXT NOT NULL,
               repo TEXT NOT NULL,
               branch TEXT,
+              path TEXT NOT NULL,
+              language TEXT NOT NULL,
+              start_row INTEGER NOT NULL,
+              start_col INTEGER NOT NULL,
+              end_row INTEGER NOT NULL,
+              end_col INTEGER NOT NULL,
+              start_bytes INTEGER NOT NULL,
+              end_bytes INTEGER NOT NULL,
               chunk TEXT NOT NULL,
+              status TEXT NOT NULL,
+              mutation_id TEXT,
               embedding vector({self._dim}) NOT NULL,
               search_vector tsvector
             )
@@ -72,10 +88,13 @@ class PersistInPostgres(PersistenceAdapter):
     @property
     def _upsert_sql(self) -> str:
         return (
-            f"INSERT INTO {self._table} (id, path, repo, branch, chunk, embedding, search_vector) "
-            "VALUES (:id, :path, :repo, :branch, :chunk, :embedding, to_tsvector('english', :chunk)) "
-            "ON CONFLICT(id) DO UPDATE SET path=excluded.path, repo=excluded.repo, branch=excluded.branch, chunk=excluded.chunk, "
-            "embedding=excluded.embedding, search_vector=excluded.search_vector"
+            f"INSERT INTO {self._table} (id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
+            "start_bytes, end_bytes, chunk, status, mutation_id, embedding, search_vector) "
+            f"VALUES (:id, :repo, :branch, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :embedding, to_tsvector('{POSTGRES_FTS_LANGUAGE}', :chunk)) "
+            "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch, path=excluded.path, language=excluded.language, "
+            "start_row=excluded.start_row, start_col=excluded.start_col, end_row=excluded.end_row, end_col=excluded.end_col, "
+            "start_bytes=excluded.start_bytes, end_bytes=excluded.end_bytes, chunk=excluded.chunk, status=excluded.status, "
+            "mutation_id=excluded.mutation_id, embedding=excluded.embedding, search_vector=excluded.search_vector"
         )
 
     def persist_batch(self, chunks: Sequence[Chunk]) -> None:
@@ -88,14 +107,25 @@ class PersistInPostgres(PersistenceAdapter):
             for chunk in valid:
                 if chunk.embeddings is None:
                     raise ValueError(f"Chunk {chunk.path} missing embeddings")
+                start_row, start_col = chunk.start_rc
+                end_row, end_col = chunk.end_rc
                 conn.execute(
                     stmt,
                     {
                         "id": chunk.id(),
-                        "path": chunk.path,
                         "repo": chunk.repo,
                         "branch": chunk.branch,
+                        "path": chunk.path,
+                        "language": chunk.language,
+                        "start_row": start_row,
+                        "start_col": start_col,
+                        "end_row": end_row,
+                        "end_col": end_col,
+                        "start_bytes": chunk.start_bytes,
+                        "end_bytes": chunk.end_bytes,
                         "chunk": chunk.chunk,
+                        "status": "committed",
+                        "mutation_id": None,
                         "embedding": self._decode_embedding(chunk.embeddings),
                     },
                 )
@@ -118,7 +148,7 @@ class PersistInPostgres(PersistenceAdapter):
         branch: str | None = None,
     ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
-        filters = [":query_text = '' OR search_vector @@ websearch_to_tsquery('english', :query_text)"]
+        filters = [f":query_text = '' OR search_vector @@ websearch_to_tsquery('{POSTGRES_FTS_LANGUAGE}', :query_text)"]
         params: Dict[str, Any] = {
             "query_text": (query_text or "").strip(),
             "query_embedding": query_embedding,
@@ -141,16 +171,21 @@ class PersistInPostgres(PersistenceAdapter):
                 branch,
                 chunk,
                 embedding,
-                ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) AS keyword_rank,
+                ts_rank_cd(search_vector, websearch_to_tsquery(:fts_lang, :query_text)) AS keyword_rank,
                 1 - (embedding <=> :query_embedding) AS vector_rank,
-                ((1 - (embedding <=> :query_embedding)) * 0.7 +
-                 ts_rank_cd(search_vector, websearch_to_tsquery('english', :query_text)) * 0.3) AS hybrid_rank
+                ((1 - (embedding <=> :query_embedding)) * :vector_weight +
+                 ts_rank_cd(search_vector, websearch_to_tsquery(:fts_lang, :query_text)) * :keyword_weight) AS hybrid_rank
             FROM {self._table}
             WHERE {where_clause}
             ORDER BY hybrid_rank DESC
             LIMIT :limit
             """
         ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
+        params.update({
+            "fts_lang": POSTGRES_FTS_LANGUAGE,
+            "vector_weight": HYBRID_SEARCH_VECTOR_WEIGHT,
+            "keyword_weight": HYBRID_SEARCH_KEYWORD_WEIGHT,
+        })
 
         with self._engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
@@ -175,11 +210,11 @@ class PersistInPostgres(PersistenceAdapter):
             repo=row.get("repo") or "",
             branch=row.get("branch"),
             path=row.get("path") or "",
-            language="unknown",
-            start_rc=(0, 0),
-            end_rc=(0, 0),
-            start_bytes=0,
-            end_bytes=len(text_value.encode("utf-8")),
+            language=row.get("language") or "unknown",
+            start_rc=(int(row.get("start_row") or 0), int(row.get("start_col") or 0)),
+            end_rc=(int(row.get("end_row") or 0), int(row.get("end_col") or 0)),
+            start_bytes=int(row.get("start_bytes") or 0),
+            end_bytes=int(row.get("end_bytes") or len(text_value.encode("utf-8"))),
             embeddings=embedding_bytes,
         )
 

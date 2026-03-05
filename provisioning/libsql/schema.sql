@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk TEXT NOT NULL,
   status TEXT NOT NULL,
   mutation_id TEXT,
+  -- Note: the 'embedding' blob should be a float32 array with dimensions matching EMBEDDING_DIMENSIONS (currently 1024)
   embedding BLOB NOT NULL
 );
 

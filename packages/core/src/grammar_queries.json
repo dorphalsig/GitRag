@@ -134,8 +134,7 @@
         "(function_item) @method"
       ],
       "cpp": [
-        "(function_definition declarator: (function_declarator declarator: (scoped_identifier scope: (type_identifier) @explicit_scope))) @method",
-        "(function_definition declarator: (function_declarator declarator: (scoped_identifier scope: (namespace_identifier) @explicit_scope))) @method",
+        "(function_definition declarator: (function_declarator declarator: (qualified_identifier scope: (namespace_identifier) @explicit_scope))) @method",
         "(function_definition) @method"
       ],
       "c": ["(function_definition) @method"],
@@ -169,7 +168,7 @@
       "dart": ["(declaration (type_identifier)) @field"],
       "pascal": ["(declField) @field", "(declVar) @field", "(declConst) @field"],
       "python": ["(expression_statement (assignment)) @field"],
-      "javascript": ["(field_definition) @field", "(public_field_definition) @field"],
+      "javascript": ["(field_definition) @field"],
       "typescript": ["(public_field_definition) @field"],
       "csharp": ["(field_declaration) @field"],
       "go": ["(field_declaration) @field"],
@@ -184,16 +183,14 @@
       "kotlin": ["(getter) @accessor", "(setter) @accessor"],
       "dart": ["(getter_signature) @accessor", "(setter_signature) @accessor"],
       "csharp": ["(property_declaration) @accessor", "(indexer_declaration) @accessor"],
-      "python": [
-        "(function_definition (decorator (dotted_name (identifier) @name (#eq? @name \"property\")))) @accessor"
-      ],
+      "python": ["(decorated_definition (decorator (identifier) @_name (#eq? @_name \"property\")) definition: (function_definition) @accessor)"],
       "javascript": [
         "(pair key: (property_identifier) @name value: (function_expression)) @method"
       ],
       "ruby": ["(alias) @accessor"]
     },
     "Initializer": {
-      "java": ["(static_initializer) @initializer", "(instance_initializer) @initializer"],
+      "java": ["(static_initializer) @initializer", "(class_body (block) @initializer)"],
       "kotlin": ["(anonymous_initializer) @initializer"],
       "dart": [],
       "pascal": ["(initialization) @initializer", "(finalization) @initializer"],

@@ -21,12 +21,12 @@ import subprocess
 from typing import Dict, Iterable, List, Set, Tuple
 
 from Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
+from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, INDEXER_FILE_BATCH_SIZE
 from Calculators.CodeRankCalculator import CodeRankCalculator
 import chunker
 from text_detection import BinaryDetector
 
 logger = logging.getLogger("feed")
-
 
 def _run_git(args: List[str]) -> str:
     """Run a git command and return stdout as text.
@@ -165,7 +165,7 @@ def _list_paths(args: List[str]) -> Set[str]:
 
 
 def _resolve_db_cfg() -> DBConfig:
-    provider = (_env_value("DB_PROVIDER") or "libsql").lower()
+    provider = (_env_value("DB_PROVIDER") or DEFAULT_DB_PROVIDER).lower()
     database_url = _env_value("DATABASE_URL")
     if not database_url and provider == "libsql":
         database_url = _env_value("TURSO_DATABASE_URL")
@@ -177,7 +177,7 @@ def _resolve_db_cfg() -> DBConfig:
 
     auth_token = _env_value("DB_AUTH_TOKEN") or _env_value("TURSO_AUTH_TOKEN") or None
     if provider == "libsql":
-        table = _env_value("LIBSQL_TABLE") or "chunks"
+        table = _env_value("LIBSQL_TABLE") or DEFAULT_TABLE_NAME
         fts_table = _env_value("LIBSQL_FTS_TABLE") or None
         return LibsqlConfig.from_parts(
             database_url=database_url,
@@ -214,26 +214,28 @@ def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]
 
 
 def _process_files(paths, repo, calc, persist, branch=None):
-    all_chunks = []
-    for p in paths:
+    total = 0
+    path_list = list(paths)
+    for i in range(0, len(path_list), INDEXER_FILE_BATCH_SIZE):
+        batch_paths = path_list[i:i + INDEXER_FILE_BATCH_SIZE]
+        all_chunks = []
+        for p in batch_paths:
+            try:
+                all_chunks.extend(chunker.chunk_file(p, repo, branch=branch))
+            except Exception as e:
+                logger.error("Failed chunking %s: %s", p, e)
+        if not all_chunks:
+            continue
         try:
-            all_chunks.extend(chunker.chunk_file(p, repo, branch=branch))
+            texts = [c.chunk for c in all_chunks]
+            embeddings = calc.calculate_batch(texts)
+            for chunk, emb in zip(all_chunks, embeddings):
+                object.__setattr__(chunk, "embeddings", emb)
+            persist.persist_batch(all_chunks)
+            total += len(all_chunks)
         except Exception as e:
-            logger.error("Failed chunking %s: %s", p, e)
-
-    if not all_chunks:
-        return 0
-
-    try:
-        texts = [c.chunk for c in all_chunks]
-        embeddings = calc.calculate_batch(texts)  # single batched call
-        for chunk, emb in zip(all_chunks, embeddings):
-            object.__setattr__(chunk, "embeddings", emb)  # Chunk is frozen
-        persist.persist_batch(all_chunks)
-        return len(all_chunks)
-    except Exception as e:
-        logger.error("Embed/persist failed: %s", e)
-        return 0
+            logger.error("Embed/persist failed for batch %d-%d: %s", i, i+INDEXER_FILE_BATCH_SIZE, e)
+    return total
 
 
 def main() -> None:

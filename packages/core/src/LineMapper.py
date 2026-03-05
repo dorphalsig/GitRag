@@ -1,7 +1,6 @@
 import bisect
 from typing import Optional
 
-
 class LineMapper:
     """
     Efficiently maps byte offsets to (row, col) tuples using precomputed newline positions.
@@ -16,8 +15,6 @@ class LineMapper:
             self.newlines.append(pos)
             pos = contents.find(b"\n", pos + 1)
 
-    import bisect
-    from typing import Optional
 
     def find_nearest_newline(self, target: int, lo: int, hi: int) -> Optional[int]:
         """

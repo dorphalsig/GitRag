@@ -26,16 +26,29 @@ from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
 from Chunk import Chunk
 from LineMapper import LineMapper
+from constants import (
+    DOC_CSV_EXTS,
+    DOC_GRAMMAR_VERSION,
+    DOC_HARD_CAP_BYTES,
+    DOC_JSON_EXTS,
+    DOC_MARKDOWN_EXTS,
+    DOC_MIN_CHUNK_BYTES,
+    DOC_OVERLAP_BYTES,
+    DOC_SOFT_MAX_BYTES,
+    DOC_TOML_EXTS,
+    DOC_TSV_EXTS,
+    DOC_YAML_EXTS,
+    FALLBACK_OVERLAP_RATIO,
+    GRAMMAR_CONFIG_FILENAME,
+    HARD_CAP_BYTES,
+    NEWLINE_WINDOW,
+    SOFT_MAX_BYTES,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------- Constants & Config ----------------
 # Internal constants (no knobs).
-SOFT_MAX_BYTES = 16_384  # packing target
-HARD_CAP_BYTES = 24_576  # absolute per-chunk limit
-NEWLINE_WINDOW = 2_048  # cut nudge window
-
-FALLBACK_OVERLAP_RATIO = 0.10
 
 _ROOT_ATOM_RE = re.compile(r"\(+\s*([A-Za-z_]\w*)\b")
 _MD_ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -94,7 +107,7 @@ def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
 
 def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
     """Load extensions and Tree-sitter query patterns from JSON configuration."""
-    cfg_path = Path(__file__).with_name("grammar_queries.json")
+    cfg_path = Path(__file__).with_name(GRAMMAR_CONFIG_FILENAME)
     with cfg_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
@@ -108,24 +121,13 @@ def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, di
 
 
 CODE_EXTENSIONS, NONCODE_TS_GRAMMAR, GRAMMAR_QUERIES = _load_grammar_config()
-
-# Document chunking parameters
-DOC_SOFT_MAX_BYTES = 8_192
-DOC_HARD_CAP_BYTES = 16_384
-DOC_OVERLAP_BYTES = 256
-DOC_MIN_CHUNK_BYTES = 2_048
-DOC_GRAMMAR_VERSION = "doc-chunker-v1"
-
-DOC_MARKDOWN_EXTS = {"md", "markdown", "rst"}
-DOC_JSON_EXTS = {"json", "jsonl", "ndjson"}
-DOC_YAML_EXTS = {"yaml", "yml"}
-DOC_TOML_EXTS = {"toml"}
-DOC_CSV_EXTS = {"csv"}
-DOC_TSV_EXTS = {"tsv"}
 def chunk_file(path: str, repo: str, branch: str | None = None) -> List[Chunk]:
     path_obj = Path(path)
     file_extension = path_obj.suffix.lower().lstrip(".")
     contents = path_obj.read_bytes()
+    if not contents:
+        return []
+
     mapper = LineMapper(contents)
 
     if lang := CODE_EXTENSIONS.get(file_extension, None):
@@ -584,7 +586,7 @@ def _chunk_plaintext(
         segments.append(seg)
 
     segments = _merge_small_segments(ctx, segments)
-    return _segments_to_chunks(ctx, contents, path, repo, "text", segments, mapper)
+    return _segments_to_chunks(ctx, contents, path, repo, "text", segments, mapper, branch=branch)
 
 
 
@@ -595,7 +597,7 @@ def _chunk_plaintext_bytes(
     total = len(contents)
     if total == 0:
         return []
-    
+
     # Efficient EOL detection using LineMapper
     if mapper.newlines:
         first_nl = mapper.newlines[0]
@@ -604,9 +606,9 @@ def _chunk_plaintext_bytes(
         eol = ""
 
     ranges = _newline_aligned_ranges(
-        contents, 0, total, mapper, 
-        soft_max=DOC_SOFT_MAX_BYTES, 
-        hard_cap=DOC_HARD_CAP_BYTES, 
+        contents, 0, total, mapper,
+        soft_max=DOC_SOFT_MAX_BYTES,
+        hard_cap=DOC_HARD_CAP_BYTES,
         overlap=DOC_OVERLAP_BYTES
     )
     chunks: List[Chunk] = []
@@ -853,7 +855,7 @@ def _split_block_if_needed(ctx: DocContext, block: DocBlock, mapper: LineMapper)
     newline_indices = mapper.get_newline_positions(start_bytes, end_bytes)
     # Convert byte offsets of newlines to char offsets (+1 to point AFTER the newline)
     newline_positions = [_bytes_to_char(ctx, b + 1) for b in newline_indices]
-    
+
     if not newline_positions or newline_positions[-1] != block.end_char:
         newline_positions.append(block.end_char)
 
@@ -1735,10 +1737,10 @@ def _split_large_node(contents: bytes, node: "Node", mapper: LineMapper) -> List
 
 
 def _newline_aligned_ranges(
-    contents: bytes, 
-    start: int, 
-    end: int, 
-    mapper: LineMapper, 
+    contents: bytes,
+    start: int,
+    end: int,
+    mapper: LineMapper,
     soft_max: int = SOFT_MAX_BYTES,
     hard_cap: int = HARD_CAP_BYTES,
     overlap: int = 0
