@@ -234,7 +234,8 @@ def _process_files(paths, repo, calc, persist, branch=None):
             batch = chunks[:EMBEDDING_BATCH_SIZE]
             chunks = chunks[EMBEDDING_BATCH_SIZE:]
             try:
-                embeddings = calc.calculate_batch(batch)
+                text = [chunk.chunk for chunk in batch]
+                embeddings = calc.calculate_batch(text)
                 for chunk, emb in zip(batch, embeddings):
                     object.__setattr__(chunk, "embeddings", emb)
                 persist.persist_batch(batch)
