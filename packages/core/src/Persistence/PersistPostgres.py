@@ -8,7 +8,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
-from Chunk import Chunk
+from Chunker.Chunk import Chunk
 from Persist import DBConfig, PersistenceAdapter
 from constants import (
     DEFAULT_TABLE_NAME,

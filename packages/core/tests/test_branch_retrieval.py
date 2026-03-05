@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from array import array
 
-from Chunk import Chunk
+from Chunker.Chunk import Chunk
 from Retriever import Retriever
 
 

@@ -3,12 +3,11 @@ from __future__ import annotations
 from array import array
 from unittest import mock
 
-import pytest
 from sqlalchemy import create_engine, text
 
-from Chunk import Chunk
-from Persist import DBConfig, LibsqlConfig, PersistInLibsql
-from PersistPostgres import PersistInPostgres
+from Chunker.Chunk import Chunk
+from Persistence.Persist import DBConfig, LibsqlConfig, PersistInLibsql
+from Persistence.PersistPostgres import PersistInPostgres
 
 
 def _bootstrap_libsql_schema(engine) -> None:

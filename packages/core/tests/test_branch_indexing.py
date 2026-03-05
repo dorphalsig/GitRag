@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from Chunk import Chunk
+from Chunker.Chunk import Chunk
 import Indexer
 
 
@@ -49,7 +49,7 @@ def test_process_files_forwards_branch_to_chunker_and_persisted_chunks(monkeypat
             )
         ]
 
-    monkeypatch.setattr(Indexer.chunker, "chunk_file", fake_chunk_file)
+    monkeypatch.setattr(Chunker.chunker, "chunk_file", fake_chunk_file)
 
     persist = _Persist()
     total = Indexer._process_files(["src/a.py"], "org/repo", _Calc(), persist, branch="feature-x")
@@ -90,7 +90,7 @@ def test_main_threads_branch_argument_end_to_end(monkeypatch) -> None:
             )
         ]
 
-    monkeypatch.setattr(Indexer.chunker, "chunk_file", fake_chunk_file)
+    monkeypatch.setattr(Chunker.chunker, "chunk_file", fake_chunk_file)
 
     with mock.patch.object(sys, "argv", ["Indexer.py", "org/repo", "--branch", "feature-x"]):
         with mock.patch.object(Indexer.logger, "info") as info_spy:

@@ -54,7 +54,7 @@ def _import_chunker():
     2) Dynamically load the first src/**/Chunker.py found
     """
     try:
-        import chunker as m  # type: ignore
+        from Chunker import chunker as m
         return m
     except ImportError as exc:
         for p in SRC.rglob("Chunker.py"):

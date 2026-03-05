@@ -9,9 +9,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from Chunk import Chunk  # type: ignore
-from Persist import DBConfig, create_persistence_adapter  # type: ignore
-from PersistPostgres import PersistInPostgres  # type: ignore
+from Chunker.Chunk import Chunk  # type: ignore
+from Persistence.Persist import DBConfig, create_persistence_adapter  # type: ignore
+from Persistence.PersistPostgres import PersistInPostgres  # type: ignore
 from constants import POSTGRES_FTS_LANGUAGE
 
 

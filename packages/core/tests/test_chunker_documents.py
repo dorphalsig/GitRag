@@ -18,7 +18,7 @@ class DocumentChunkerTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         ensure_fixtures()
         cls._ensure_tree_sitter_stubs()
-        import chunker  # type: ignore
+        from Chunker import chunker
 
         cls.chunker = chunker
         cls.markdown_fixture = ROOT / "tests" / "fixtures" / "Markdown.md"

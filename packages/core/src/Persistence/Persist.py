@@ -5,7 +5,7 @@ import logging
 import math
 from array import array
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
 
 import numpy as np
 
@@ -21,7 +21,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 else:  # pragma: no cover - success path
     SQLALCHEMY_IMPORT_ERROR = None
 
-from Chunk import Chunk
+from Chunker.Chunk import Chunk
 from constants import (
     DEFAULT_FTS_TABLE_SUFFIX,
     DEFAULT_TABLE_NAME,

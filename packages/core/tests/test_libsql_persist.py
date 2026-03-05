@@ -12,8 +12,8 @@ SRC = ROOT / "src"
 if str(SRC) not in __import__("sys").path:
     __import__("sys").path.insert(0, str(SRC))
 
-from Chunk import Chunk  # type: ignore
-from Persist import LibsqlConfig, create_persistence_adapter  # type: ignore
+from Chunker.Chunk import Chunk  # type: ignore
+from Persistence.Persist import LibsqlConfig, create_persistence_adapter  # type: ignore
 
 
 def _required_env(name: str) -> str:

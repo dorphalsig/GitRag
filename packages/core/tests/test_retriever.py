@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from Chunk import Chunk
+from Chunker.Chunk import Chunk
 from Retriever import Qwen3Reranker, Retriever
 from constants import RETRIEVAL_QUERY_PREFIX
 

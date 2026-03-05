@@ -18,12 +18,12 @@ import json
 import logging
 import os
 import subprocess
-from typing import Dict, Iterable, List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
-from Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
+from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
 from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, INDEXER_FILE_BATCH_SIZE
 from Calculators.CodeRankCalculator import CodeRankCalculator
-import chunker
+from Chunker import chunker
 from text_detection import BinaryDetector
 
 logger = logging.getLogger("feed")
@@ -216,7 +216,9 @@ def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]
 def _process_files(paths, repo, calc, persist, branch=None):
     total = 0
     path_list = list(paths)
+    logger.info("Chunking %d files", len(path_list))
     for i in range(0, len(path_list), INDEXER_FILE_BATCH_SIZE):
+        logger.info("Processing batch %d-%d", i, i + INDEXER_FILE_BATCH_SIZE)
         batch_paths = path_list[i:i + INDEXER_FILE_BATCH_SIZE]
         all_chunks = []
         for p in batch_paths:
@@ -227,6 +229,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
         if not all_chunks:
             continue
         try:
+            logger.info("Calculating embeddings for %d chunks of batch #%d", len(all_chunks), i)
             texts = [c.chunk for c in all_chunks]
             embeddings = calc.calculate_batch(texts)
             for chunk, emb in zip(all_chunks, embeddings):

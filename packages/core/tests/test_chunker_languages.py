@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment dependent
 
     pytest.skip("tree_sitter_language_pack not installed", allow_module_level=True)
 
-import chunker  # type: ignore
+from Chunker import chunker
 
 from tests.fixtures import ensure_fixtures, load_bytes
 

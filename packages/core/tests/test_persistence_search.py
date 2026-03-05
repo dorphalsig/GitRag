@@ -5,9 +5,9 @@ from unittest import mock
 
 from sqlalchemy import create_engine, text
 
-from Chunk import Chunk
-from Persist import DBConfig, LibsqlConfig, PersistInLibsql
-from PersistPostgres import PersistInPostgres
+from Chunker.Chunk import Chunk
+from Persistence.Persist import DBConfig, LibsqlConfig, PersistInLibsql
+from Persistence.PersistPostgres import PersistInPostgres
 
 
 def _chunk(*, repo: str, path: str, body: str, vec: list[float]) -> Chunk:

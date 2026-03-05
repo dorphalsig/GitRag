@@ -24,6 +24,7 @@ from typing import Iterable, List, Tuple, Optional, Dict, Any
 
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
+
 from Chunk import Chunk
 from LineMapper import LineMapper
 from constants import (
@@ -62,14 +63,6 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _BLANK_LINE_RE = re.compile(rb"\r?\n[ \t]*\r?\n")
 
 
-def _slugify(text: str) -> str:
-    """Best-effort slug for heading anchors."""
-    lowered = text.strip().lower()
-    sanitized = re.sub(r"[^a-z0-9\s-]", "", lowered)
-    collapsed = re.sub(r"[\s-]+", "-", sanitized).strip("-")
-    return collapsed
-
-
 @dataclass
 class DocContext:
     text: str
@@ -91,20 +84,6 @@ class DocBlock:
     fence_lang: Optional[str] = None
 
 
-
-
-def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
-    return DocBlock(
-        start_char=start_char,
-        end_char=end_char,
-        type=block.type,
-        heading_level=block.heading_level,
-        heading_title=block.heading_title,
-        heading_anchor=block.heading_anchor,
-        fence_lang=block.fence_lang,
-    )
-
-
 def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
     """Load extensions and Tree-sitter query patterns from JSON configuration."""
     cfg_path = Path(__file__).with_name(GRAMMAR_CONFIG_FILENAME)
@@ -121,6 +100,28 @@ def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, di
 
 
 CODE_EXTENSIONS, NONCODE_TS_GRAMMAR, GRAMMAR_QUERIES = _load_grammar_config()
+
+
+def _slugify(text: str) -> str:
+    """Best-effort slug for heading anchors."""
+    lowered = text.strip().lower()
+    sanitized = re.sub(r"[^a-z0-9\s-]", "", lowered)
+    collapsed = re.sub(r"[\s-]+", "-", sanitized).strip("-")
+    return collapsed
+
+
+def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
+    return DocBlock(
+        start_char=start_char,
+        end_char=end_char,
+        type=block.type,
+        heading_level=block.heading_level,
+        heading_title=block.heading_title,
+        heading_anchor=block.heading_anchor,
+        fence_lang=block.fence_lang,
+    )
+
+
 def chunk_file(path: str, repo: str, branch: str | None = None) -> List[Chunk]:
     path_obj = Path(path)
     file_extension = path_obj.suffix.lower().lstrip(".")
@@ -133,19 +134,19 @@ def chunk_file(path: str, repo: str, branch: str | None = None) -> List[Chunk]:
     if lang := CODE_EXTENSIONS.get(file_extension, None):
         chunks = _chunk_code(contents, path, lang, repo, mapper, branch=branch)
     elif file_extension in (
-        DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS
+            DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS
     ):
         chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
     elif lang := NONCODE_TS_GRAMMAR.get(file_extension, None):
         chunks = _chunk_non_code(contents, path, lang, repo, mapper, branch=branch)
     else:
         chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
-
+    logger.debug("Parsed %s into %d chunks.", path, len(chunks))
     return chunks
 
 
 def _chunk_non_code(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
+        contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     """
     Chunk a non-code file using Tree-sitter:
@@ -188,7 +189,7 @@ def _chunk_non_code(
 
 
 def _stitch_full_coverage(
-    contents: bytes, groups: List[Tuple[int, int]], mapper: LineMapper
+        contents: bytes, groups: List[Tuple[int, int]], mapper: LineMapper
 ) -> List[Tuple[int, int]]:
     """
     Expand grouped sibling ranges to cover the entire file by inserting ranges for
@@ -208,7 +209,7 @@ def _stitch_full_coverage(
 
 
 def _chunk_fallback(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
+        contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     """
     Fallback chunking without Tree-sitter:
@@ -237,7 +238,7 @@ def _chunk_fallback(
 
 
 def _chunk_document(
-    contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper, branch: str | None = None
+        contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     ctx = _build_doc_context(contents, mapper)
     if ctx is None:
@@ -257,13 +258,13 @@ def _chunk_document(
 
 
 def _chunk_markdown(
-    ctx: DocContext,
-    contents: bytes,
-    path: str,
-    repo: str,
-    language: str,
-    mapper: LineMapper,
-    branch: str | None = None,
+        ctx: DocContext,
+        contents: bytes,
+        path: str,
+        repo: str,
+        language: str,
+        mapper: LineMapper,
+        branch: str | None = None,
 ) -> List[Chunk]:
     blocks = _parse_markdown_blocks(ctx)
     if not blocks:
@@ -456,7 +457,7 @@ def _json_spans(ctx: DocContext, ext: str) -> List[Tuple[int, int, List[str]]]:
 
 
 def _chunk_json(
-    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
+        ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     spans = _json_spans(ctx, ext)
     if not spans:
@@ -499,7 +500,7 @@ def _yaml_toml_heading(text: str) -> str:
 
 
 def _chunk_yaml_toml(
-    ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
+        ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     block_tag = "yaml" if ext in DOC_YAML_EXTS else "toml"
     lines = ctx.lines
@@ -552,7 +553,8 @@ def _chunk_yaml_toml(
 
 
 def _chunk_csv(
-    ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str, mapper: LineMapper, branch: str | None = None
+        ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str, mapper: LineMapper,
+        branch: str | None = None
 ) -> List[Chunk]:
     if not ctx.text:
         return []
@@ -572,7 +574,7 @@ def _chunk_csv(
 
 
 def _chunk_plaintext(
-    ctx: DocContext, contents: bytes, path: str, repo: str, mapper: LineMapper, branch: str | None = None
+        ctx: DocContext, contents: bytes, path: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     if not ctx.text:
         return []
@@ -589,10 +591,8 @@ def _chunk_plaintext(
     return _segments_to_chunks(ctx, contents, path, repo, "text", segments, mapper, branch=branch)
 
 
-
-
 def _chunk_plaintext_bytes(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
+        contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> List[Chunk]:
     total = len(contents)
     if total == 0:
@@ -944,14 +944,14 @@ def _merge_small_segments(ctx: DocContext, segments: List[Dict[str, Any]]) -> Li
 
 
 def _segments_to_chunks(
-    ctx: DocContext,
-    contents: bytes,
-    path: str,
-    repo: str,
-    language: str,
-    segments: List[Dict[str, Any]],
-    mapper: LineMapper,
-    branch: str | None = None,
+        ctx: DocContext,
+        contents: bytes,
+        path: str,
+        repo: str,
+        language: str,
+        segments: List[Dict[str, Any]],
+        mapper: LineMapper,
+        branch: str | None = None,
 ) -> List[Chunk]:
     chunks: List[Chunk] = []
     prev_end_bytes: Optional[int] = None
@@ -1056,12 +1056,12 @@ def _segments_to_chunks(
 
 
 def _document_signature(
-    repo: str,
-    path: str,
-    start_bytes: int,
-    end_bytes: int,
-    breadcrumb: List[str],
-    preview: str,
+        repo: str,
+        path: str,
+        start_bytes: int,
+        end_bytes: int,
+        breadcrumb: List[str],
+        preview: str,
 ) -> str:
     crumb = "/".join(breadcrumb)
     cleaned_preview = " ".join(preview.strip().split())
@@ -1121,7 +1121,7 @@ def _build_doc_context(contents: bytes, mapper: LineMapper) -> Optional[DocConte
 
 
 def _chunk_code(
-    contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
+        contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
 ) -> Iterable[Chunk]:
     """
     Chunk code via Tree-sitter:
@@ -1139,11 +1139,11 @@ def _chunk_code(
     root = tree.root_node
     pkg = _get_package_name(contents, root, language)
 
-    types = _query_nodes(root,language, GRAMMAR_QUERIES["Type"].get(language, []), "type")
-    methods = _query_nodes(root,language, GRAMMAR_QUERIES["Method"].get(language, []), "method")
-    ctors = _query_nodes(root,language, GRAMMAR_QUERIES["Constructor"].get(language, []), "constructor")
-    inits = _query_nodes(root,language, GRAMMAR_QUERIES["Initializer"].get(language, []), "initializer")
-    accessors = _query_nodes(root,language, GRAMMAR_QUERIES["Accessor"].get(language, []), "accessor")
+    types = _query_nodes(root, language, GRAMMAR_QUERIES["Type"].get(language, []), "type")
+    methods = _query_nodes(root, language, GRAMMAR_QUERIES["Method"].get(language, []), "method")
+    ctors = _query_nodes(root, language, GRAMMAR_QUERIES["Constructor"].get(language, []), "constructor")
+    inits = _query_nodes(root, language, GRAMMAR_QUERIES["Initializer"].get(language, []), "initializer")
+    accessors = _query_nodes(root, language, GRAMMAR_QUERIES["Accessor"].get(language, []), "accessor")
 
     chunks: List[Chunk] = []
 
@@ -1154,11 +1154,11 @@ def _chunk_code(
             chunks.append(ch)
 
     top_level_types = [t for t in types if _is_top_level_type(t, language)]
-    fields = _query_nodes(root,language, GRAMMAR_QUERIES["Field"].get(language, []), "field")
-    enums = _query_nodes(root,language, GRAMMAR_QUERIES["EnumMember"].get(language, []), "enum_member")
-    anno_elems = _query_nodes(root,language, GRAMMAR_QUERIES["AnnotationElement"].get(language, []),
+    fields = _query_nodes(root, language, GRAMMAR_QUERIES["Field"].get(language, []), "field")
+    enums = _query_nodes(root, language, GRAMMAR_QUERIES["EnumMember"].get(language, []), "enum_member")
+    anno_elems = _query_nodes(root, language, GRAMMAR_QUERIES["AnnotationElement"].get(language, []),
                               "annotation_element")
-    record_comps = _query_nodes(root,language, GRAMMAR_QUERIES["RecordComponent"].get(language, []),
+    record_comps = _query_nodes(root, language, GRAMMAR_QUERIES["RecordComponent"].get(language, []),
                                 "record_component")
 
     for t in sorted(top_level_types, key=lambda n: (n.start_byte, n.end_byte)):
@@ -1238,13 +1238,14 @@ def _is_top_level_type(n: Node, language: str) -> bool:
 
 
 from tree_sitter import Query, QueryError
+
 try:  # Tree-sitter releases prior to 0.22 omit QueryCursor
     from tree_sitter import QueryCursor  # type: ignore
 except ImportError:  # pragma: no cover - fallback for older runtimes
     QueryCursor = None  # type: ignore
 
 
-def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
+def _query_nodes(root: Node, language: str, sexprs: list[str], capture: str):
     """
     Execute `sexprs` as a Tree-sitter Query and return nodes captured as `@{capture}`.
     """
@@ -1296,10 +1297,10 @@ def _query_nodes(root:Node, language: str, sexprs: list[str], capture: str):
 
 
 def _query_matches(
-    root: Node,
-    language: str,
-    sexprs: list[str],
-    capture: str,
+        root: Node,
+        language: str,
+        sexprs: list[str],
+        capture: str,
 ) -> List[Tuple[Node, Dict[str, Node]]]:
     """Return capture-grouped matches keyed by capture name."""
     if not sexprs:
@@ -1335,9 +1336,9 @@ def _query_variants(sexprs: list[str], language: str) -> list[str]:
 
 
 def _collect_query_matches(
-    query: Query,
-    root: Node,
-    capture: str,
+        query: Query,
+        root: Node,
+        capture: str,
 ) -> List[Tuple[Node, Dict[str, Node]]]:
     """Collect grouped capture matches from a prepared query."""
     if QueryCursor is not None and hasattr(QueryCursor, "matches"):
@@ -1379,14 +1380,14 @@ def _unique_by_span(nodes: List[Node]) -> List[Node]:
 
 
 def _build_method_like_chunks(
-    node: Node,
-    contents: bytes,
-    path: str,
-    language: str,
-    repo: str,
-    pkg: str,
-    mapper: LineMapper,
-    branch: str | None = None,
+        node: Node,
+        contents: bytes,
+        path: str,
+        language: str,
+        repo: str,
+        pkg: str,
+        mapper: LineMapper,
+        branch: str | None = None,
 ) -> List[Chunk]:
     """
     Emit 1..N chunks for a method/function/ctor/init/accessor.
@@ -1448,19 +1449,19 @@ def _build_method_like_chunks(
 
 
 def _build_class_metadata_chunk(
-    type_node: Node,
-    contents: bytes,
-    path: str,
-    language: str,
-    repo: str,
-    pkg: str,
-    mapper: LineMapper,
-    methods: List[Node],
-    fields: List[Node],
-    enums: List[Node],
-    anno_elems: List[Node],
-    record_comps: List[Node],
-    branch: str | None = None,
+        type_node: Node,
+        contents: bytes,
+        path: str,
+        language: str,
+        repo: str,
+        pkg: str,
+        mapper: LineMapper,
+        methods: List[Node],
+        fields: List[Node],
+        enums: List[Node],
+        anno_elems: List[Node],
+        record_comps: List[Node],
+        branch: str | None = None,
 ) -> Chunk:
     """
     Emit one metadata chunk per top-level type (no bodies).
@@ -1600,7 +1601,7 @@ def _get_package_name(contents: bytes, root: Node, language: str) -> str:
          trim leading/trailing dots, and drop a trailing ';'.
     """
     sexprs = GRAMMAR_QUERIES["Package"].get(language, [])
-    nodes = _query_nodes(root,language, sexprs, "package")
+    nodes = _query_nodes(root, language, sexprs, "package")
     if not nodes:
         return ""
 
@@ -1617,12 +1618,12 @@ def _get_package_name(contents: bytes, root: Node, language: str) -> str:
 
 
 def _fqn_for_node(
-    node: Node,
-    contents: bytes,
-    path: str = "",
-    language: str = "",
-    pkg: str = "",
-    context: Optional[Dict[str, Node]] = None,
+        node: Node,
+        contents: bytes,
+        path: str = "",
+        language: str = "",
+        pkg: str = "",
+        context: Optional[Dict[str, Node]] = None,
 ) -> str:
     """
     Build a best-effort FQDN: package + explicit/enclosing scope + name(params).
@@ -1669,7 +1670,7 @@ def _first_multi_child_level(root) -> "Node":
 
 
 def _pack_siblings(
-    contents: bytes, siblings: List["Node"], mapper: LineMapper
+        contents: bytes, siblings: List["Node"], mapper: LineMapper
 ) -> List[Tuple[int, int]]:
     """
     Pack sibling nodes sequentially up to SOFT_MAX_BYTES. Oversized siblings are handled
@@ -1737,13 +1738,13 @@ def _split_large_node(contents: bytes, node: "Node", mapper: LineMapper) -> List
 
 
 def _newline_aligned_ranges(
-    contents: bytes,
-    start: int,
-    end: int,
-    mapper: LineMapper,
-    soft_max: int = SOFT_MAX_BYTES,
-    hard_cap: int = HARD_CAP_BYTES,
-    overlap: int = 0
+        contents: bytes,
+        start: int,
+        end: int,
+        mapper: LineMapper,
+        soft_max: int = SOFT_MAX_BYTES,
+        hard_cap: int = HARD_CAP_BYTES,
+        overlap: int = 0
 ) -> List[Tuple[int, int]]:
     """
     Split [start, end) into segments targeting soft_max each, then apply
@@ -1782,8 +1783,6 @@ def _newline_aligned_ranges(
     return ranges
 
 
-
-
 def _bytes_to_char(ctx: DocContext, byte_offset: int) -> int:
     index = bisect.bisect_left(ctx.char_to_byte, byte_offset)
     if index >= len(ctx.char_to_byte):
@@ -1794,16 +1793,16 @@ def _bytes_to_char(ctx: DocContext, byte_offset: int) -> int:
 
 
 def _make_chunk(
-    contents: bytes,
-    start: int,
-    end: int,
-    path: str,
-    language: str,
-    repo: str,
-    mapper: LineMapper,
-    signature: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
-    branch: str | None = None,
+        contents: bytes,
+        start: int,
+        end: int,
+        path: str,
+        language: str,
+        repo: str,
+        mapper: LineMapper,
+        signature: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        branch: str | None = None,
 ) -> Chunk:
     """
     Build a Chunk from a byte range, computing row/col positions efficiently.

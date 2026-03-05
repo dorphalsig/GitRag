@@ -7,8 +7,8 @@ from threading import Lock
 from typing import Any, List, Optional, Protocol, Sequence
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
-from Chunk import Chunk
-from Persist import PersistenceAdapter
+from Chunker.Chunk import Chunk
+from Persistence.Persist import PersistenceAdapter
 from constants import (
     DEFAULT_ATTN_IMPLEMENTATION,
     DEFAULT_INITIAL_RETRIEVAL_LIMIT,
