@@ -16,44 +16,46 @@ class LineMapper:
             self.newlines.append(pos)
             pos = contents.find(b"\n", pos + 1)
 
+    import bisect
+    from typing import Optional
+
     def find_nearest_newline(self, target: int, lo: int, hi: int) -> Optional[int]:
         """
         Return the byte index AFTER the newline closest to target in [lo, hi],
-        or None if no newline.
+        or None if no newline. Optimized for zero-allocation hot loops.
         """
-        if not self.newlines:
+        # 1. Localize attribute to avoid LOAD_ATTR dictionary lookups
+        newlines = self.newlines
+        if not newlines:
             return None
 
-        # We want to find a newline index i such that lo <= i <= hi - 1.
-        # Among those, we want the one that minimizes abs(i - target),
-        # with a tie-break preferring the smaller index (the original behavior).
-        start_idx = bisect.bisect_left(self.newlines, lo)
-        end_idx = bisect.bisect_right(self.newlines, hi - 1)
+        hi_bound = hi - 1
+
+        start_idx = bisect.bisect_left(newlines, lo)
+        end_idx = bisect.bisect_right(newlines, hi_bound)
 
         if start_idx >= end_idx:
             return None
 
-        # Binary search for target within the valid range of newlines.
-        # mid_idx will be the index in self.newlines.
-        mid_idx = bisect.bisect_left(self.newlines, target, start_idx, end_idx)
+        # Binary search for target strictly within the valid range
+        mid_idx = bisect.bisect_left(newlines, target, start_idx, end_idx)
 
-        candidates = []
+        # 2. Replace dynamic list allocation with fast scalar variables
+        c1 = -1
+        c2 = -1
+
         if mid_idx > start_idx:
-            candidates.append(self.newlines[mid_idx - 1])
+            c1 = newlines[mid_idx - 1]
         if mid_idx < end_idx:
-            candidates.append(self.newlines[mid_idx])
+            c2 = newlines[mid_idx]
 
-        if not candidates:
-            return None
+        # 3. Streamlined branch evaluation
+        if c1 == -1:
+            return c2 + 1
+        if c2 == -1:
+            return c1 + 1
 
-        if len(candidates) == 1:
-            return candidates[0] + 1
-
-        c1, c2 = candidates
-        d1 = target - c1
-        d2 = c2 - target
-
-        if d1 <= d2:
+        if (target - c1) <= (c2 - target):
             return c1 + 1
         return c2 + 1
 
@@ -74,7 +76,7 @@ class LineMapper:
 
         # 2. Empty File / Start of File Fast-Path
         if offset == 0:
-            return (0, 0)
+            return 0, 0
 
         # 3. Binary Search for the newline preceding the offset
         # bisect_left returns the insertion point to maintain order.
@@ -85,7 +87,7 @@ class LineMapper:
             # Case: Offset is before the very first newline (Row 0)
             # OR File has no newlines at all.
             # Col is simply the byte offset from start.
-            return (0, offset)
+            return 0, offset
 
         # Case: Offset is after at least one newline.
         # The 'row' is simply the index of the newline that started this line.

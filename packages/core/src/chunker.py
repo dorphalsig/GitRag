@@ -961,10 +961,38 @@ def _segments_to_chunks(
         end_bytes = ctx.char_to_byte[end_char]
 
         if prev_end_bytes is not None:
-            overlap_start = max(0, prev_end_bytes - DOC_OVERLAP_BYTES)
-            if overlap_start < start_bytes:
-                start_bytes = overlap_start
-                start_char = _bytes_to_char(ctx, start_bytes)
+            first_block_type = seg["blocks"][0].type if seg["blocks"] else None
+            if first_block_type != "heading":
+                # Bound the search window to prevent unbounded backwards scanning.
+                # You can extract this 2048 to a constant like MAX_PARAGRAPH_LOOKBACK_BYTES.
+                search_start = max(0, prev_end_bytes - 2048)
+
+                # Step back by 2 bytes from prev_end_bytes so we don't match a trailing
+                # paragraph break that sits at the exact boundary of the previous chunk.
+                search_end = max(search_start, prev_end_bytes - 2)
+
+                # High-performance backward search for paragraph boundaries
+                para_idx = contents.rfind(b'\n\n', search_start, search_end)
+                crlf_idx = contents.rfind(b'\r\n\r\n', search_start, search_end)
+                last_para_break = para_idx if para_idx > crlf_idx else crlf_idx
+
+                if last_para_break != -1:
+                    # Advance past the delimiter so the overlap starts cleanly on text
+                    delimiter_len = 2 if last_para_break == para_idx else 4
+                    overlap_start = last_para_break + delimiter_len
+                else:
+                    # Fallback 1: Single newline
+                    nl_idx = contents.rfind(b'\n', search_start, search_end)
+                    if nl_idx != -1:
+                        overlap_start = nl_idx + 1
+                    else:
+                        # Fallback 2: Hard byte limit if it's a massive, unbroken text block
+                        overlap_start = max(0, prev_end_bytes - DOC_OVERLAP_BYTES)
+
+                if overlap_start < start_bytes:
+                    start_bytes = overlap_start
+                    # Re-align the character pointer to the newly found byte boundary
+                    start_char = _bytes_to_char(ctx, start_bytes)
 
         chunk_text = ctx.text[start_char:end_char]
         requirement_sentences = _extract_requirement_sentences(ctx, start_char, end_char)

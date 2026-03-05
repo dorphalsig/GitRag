@@ -55,3 +55,18 @@ class CodeRankCalculator(EmbeddingCalculator):
                 f"expected {self.EMBEDDING_DIMENSIONS}"
             )
         return arr.tobytes()
+
+    def calculate_batch(self, chunks: list[str]) -> list[bytes]:
+        vecs = self._model.encode(
+            chunks,
+            normalize_embeddings=True,
+            batch_size=32,  # tune to available RAM
+            show_progress_bar=False,
+        )
+        results = []
+        for vec in vecs:
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            if arr.shape[0] != self.EMBEDDING_DIMENSIONS:
+                raise ValueError(f"Unexpected embedding dimension {arr.shape[0]}")
+            results.append(arr.tobytes())
+        return results

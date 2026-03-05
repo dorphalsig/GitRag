@@ -25,6 +25,12 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Cache Hugging Face models
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-qwen3-embedding-0.6b-${{ hashFiles('requirements.txt') }}
+        restore-keys: hf-qwen3-embedding-0.6b-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -36,6 +42,7 @@ runs:
     - name: Index Repo
       shell: bash
       env:
+        HF_HOME: ~/.cache/huggingface
         DB_PROVIDER: ${{ inputs.db_provider }}
         DATABASE_URL: ${{ inputs.database_url }}
         DB_AUTH_TOKEN: ${{ inputs.db_auth_token }}

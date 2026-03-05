@@ -216,41 +216,27 @@ def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]
     return calc, persist
 
 
-def _process_files(
-    paths: Iterable[str],
-    repo: str,
-    calc: CodeRankCalculator,
-    persist: PersistenceAdapter,
-    branch: str | None = None,
-) -> int:
-    """Chunk, embed, and persist all given text files.
-
-    Returns:
-        Total number of chunks persisted. Per-file failures are logged and skipped.
-    """
-    total = 0
-    batch: List = []
+def _process_files(paths, repo, calc, persist, branch=None):
+    all_chunks = []
     for p in paths:
-        logger.info("Processing file: %s", p)
         try:
-            chunks = chunker.chunk_file(p, repo, branch=branch)
-            logger.debug("File %s produced %d chunks", p, len(chunks))
-            for c in chunks:
-                logger.debug(
-                    "Calculating embeddings for %s:%d-%d", p, c.start_bytes, c.end_bytes
-                )
-                c.calculate_embeddings(calc)
-            batch.extend(chunks)
+            all_chunks.extend(chunker.chunk_file(p, repo, branch=branch))
         except Exception as e:
-            logger.error("Failed processing %s: %s", p, e)
-    if batch:
-        try:
-            logger.info("Persisting batch of %d chunks", len(batch))
-            persist.persist_batch(batch)
-            total = len(batch)
-        except Exception as e:
-            logger.error("Persist failed for %d chunks: %s", len(batch), e)
-    return total
+            logger.error("Failed chunking %s: %s", p, e)
+
+    if not all_chunks:
+        return 0
+
+    try:
+        texts = [c.chunk for c in all_chunks]
+        embeddings = calc.calculate_batch(texts)          # single batched call
+        for chunk, emb in zip(all_chunks, embeddings):
+            object.__setattr__(chunk, "embeddings", emb)  # Chunk is frozen
+        persist.persist_batch(all_chunks)
+        return len(all_chunks)
+    except Exception as e:
+        logger.error("Embed/persist failed: %s", e)
+        return 0
 
 
 def main() -> None:
