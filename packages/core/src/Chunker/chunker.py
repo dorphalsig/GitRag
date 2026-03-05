@@ -40,7 +40,6 @@ from constants import (
     DOC_TSV_EXTS,
     DOC_YAML_EXTS,
     FALLBACK_OVERLAP_RATIO,
-    GRAMMAR_CONFIG_FILENAME,
     HARD_CAP_BYTES,
     NEWLINE_WINDOW,
     SOFT_MAX_BYTES,
@@ -86,7 +85,7 @@ class DocBlock:
 
 def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
     """Load extensions and Tree-sitter query patterns from JSON configuration."""
-    cfg_path = Path(__file__).with_name(GRAMMAR_CONFIG_FILENAME)
+    cfg_path = Path(__file__).with_name("Chunker/grammar_queries.json")
     with cfg_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 

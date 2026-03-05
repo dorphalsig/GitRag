@@ -21,7 +21,6 @@ SOFT_MAX_BYTES = 16_384  # packing target
 HARD_CAP_BYTES = 24_576  # absolute per-chunk limit
 NEWLINE_WINDOW = 2_048  # cut nudge window
 FALLBACK_OVERLAP_RATIO = 0.10
-GRAMMAR_CONFIG_FILENAME = "Chunker/grammar_queries.json"
 
 # Document Chunker constants
 DOC_SOFT_MAX_BYTES = 8_192
