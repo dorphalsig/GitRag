@@ -230,7 +230,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
             failed_paths.append(path)
 
         if len(chunks) >= EMBEDDING_BATCH_SIZE:
-            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE,e)
+            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE)
             batch = chunks[:EMBEDDING_BATCH_SIZE]
             chunks = chunks[EMBEDDING_BATCH_SIZE:]
             try:
