@@ -217,6 +217,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
     total = 0
     path_list = list(paths)
     logger.info("Chunking %d files", len(path_list))
+    failed_paths = []
     for i in range(0, len(path_list), INDEXER_FILE_BATCH_SIZE):
         logger.info("Processing batch %d-%d", i, i + INDEXER_FILE_BATCH_SIZE)
         batch_paths = path_list[i:i + INDEXER_FILE_BATCH_SIZE]
@@ -226,6 +227,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
                 all_chunks.extend(chunker.chunk_file(p, repo, branch=branch))
             except Exception as e:
                 logger.error("Failed chunking %s: %s", p, e)
+                failed_paths.append(p)
         if not all_chunks:
             continue
         try:
@@ -238,7 +240,8 @@ def _process_files(paths, repo, calc, persist, branch=None):
             total += len(all_chunks)
         except Exception as e:
             logger.error("Embed/persist failed for batch %d-%d: %s", i, i+INDEXER_FILE_BATCH_SIZE, e)
-    return total
+            failed_paths.extend(batch_paths)
+    return total, failed_paths
 
 
 def main() -> None:
@@ -286,7 +289,7 @@ def main() -> None:
         except Exception as e:
             logger.error("Deletion pass failed: %s", e)
 
-    processed_chunks = _process_files(sorted(text_to_proc), args.repo, calc, persist, branch=args.branch)
+    processed_chunks, failed_files = _process_files(sorted(text_to_proc), args.repo, calc, persist, branch=args.branch)
 
     summary = {
         "repo": args.repo,
@@ -297,8 +300,11 @@ def main() -> None:
         "processed_chunks": processed_chunks,
         "skipped_binary": skipped_binary,
         "actions": actions,
+        "failed_paths": failed_files
     }
     print(json.dumps(summary, ensure_ascii=False))
+    if failed_files:
+        exit(1)
 
 
 if __name__ == "__main__":

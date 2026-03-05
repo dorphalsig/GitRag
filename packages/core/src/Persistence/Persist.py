@@ -353,7 +353,7 @@ def _libsql_factory(
 register_persistence_adapter("libsql", _libsql_factory)
 
 # Import side-effect: registers the postgres adapter.
-import PersistPostgres  # noqa: F401
+from . import PersistPostgres  # noqa: F401
 
 
 def create_persistence_adapter(
