@@ -22,6 +22,7 @@ from typing import Dict, List, Set, Tuple
 
 from Calculators.CodeRankCalculator import CodeRankCalculator
 from Chunker import chunker
+from Chunker.Chunk import Chunk
 from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
 from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE
 from text_detection import BinaryDetector
@@ -219,7 +220,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
     path_list = list(paths)
     logger.info("Chunking %d files", len(path_list))
     failed_paths = []
-    chunks = []
+    chunks:list[Chunk] = []
     for path in path_list:
         logger.info("Processing %s", path)
         try:
@@ -229,7 +230,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
             failed_paths.append(path)
 
         if len(chunks) >= EMBEDDING_BATCH_SIZE:
-            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE)
+            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE,e)
             batch = chunks[:EMBEDDING_BATCH_SIZE]
             chunks = chunks[EMBEDDING_BATCH_SIZE:]
             try:
@@ -239,7 +240,7 @@ def _process_files(paths, repo, calc, persist, branch=None):
                 persist.persist_batch(batch)
                 total += len(embeddings)
             except Exception as e:
-                logger.error("Embed/persist failed: %s", e)
+                logger.error("Embed/persist failed", e)
                 failed_paths.extend(batch)
 
     return total, failed_paths
