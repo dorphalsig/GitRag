@@ -50,7 +50,7 @@ if __name__ == "__main__":\n\
 \n\
     # 2. Imports (Delayed until after config check to speed up failure)\n\
     try:\n\
-        from Persist import PersistInLibsql\n\
+        from Persistence.Persist import Persist as PersistInLibsql\n\
         from Retriever import Retriever, Qwen3Reranker\n\
         from Calculators.CodeRankCalculator import CodeRankCalculator\n\
         from gitrag_mcp_server.server import create_mcp_server\n\

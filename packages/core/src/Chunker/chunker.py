@@ -25,8 +25,8 @@ from typing import Iterable, List, Tuple, Optional, Dict, Any
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
 
-from Chunk import Chunk
-from LineMapper import LineMapper
+from .Chunk import Chunk
+from .LineMapper import LineMapper
 from constants import (
     DOC_CSV_EXTS,
     DOC_GRAMMAR_VERSION,

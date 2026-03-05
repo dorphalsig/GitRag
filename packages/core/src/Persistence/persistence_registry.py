@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable, Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
-    from Persist import PersistenceAdapter, PersistConfig
+    from . import PersistenceAdapter, PersistConfig
 
 AdapterFactory = Callable[..., "PersistenceAdapter"]
 

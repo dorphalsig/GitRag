@@ -9,7 +9,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 from Chunker.Chunk import Chunk
-from Persist import DBConfig, PersistenceAdapter
+from .Persist import DBConfig, PersistenceAdapter
 from constants import (
     DEFAULT_TABLE_NAME,
     EMBEDDING_DIMENSIONS,
@@ -17,7 +17,7 @@ from constants import (
     HYBRID_SEARCH_VECTOR_WEIGHT,
     POSTGRES_FTS_LANGUAGE,
 )
-from persistence_registry import register_persistence_adapter
+from .persistence_registry import register_persistence_adapter
 
 
 class PersistInPostgres(PersistenceAdapter):

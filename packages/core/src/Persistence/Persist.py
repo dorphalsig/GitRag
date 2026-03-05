@@ -29,7 +29,7 @@ from constants import (
     HYBRID_SEARCH_KEYWORD_WEIGHT,
     HYBRID_SEARCH_VECTOR_WEIGHT,
 )
-from persistence_registry import get_persistence_adapter, register_persistence_adapter
+from .persistence_registry import get_persistence_adapter, register_persistence_adapter
 
 logger = logging.getLogger(__name__)
 
