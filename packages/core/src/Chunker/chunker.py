@@ -85,7 +85,7 @@ class DocBlock:
 
 def _load_grammar_config() -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, list[str]]]]:
     """Load extensions and Tree-sitter query patterns from JSON configuration."""
-    cfg_path = Path(__file__).with_name("Chunker/grammar_queries.json")
+    cfg_path = Path(__file__).with_name("grammar_queries.json")
     with cfg_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
