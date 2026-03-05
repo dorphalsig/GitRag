@@ -20,13 +20,14 @@ import os
 import subprocess
 from typing import Dict, List, Set, Tuple
 
-from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
-from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, INDEXER_FILE_BATCH_SIZE
 from Calculators.CodeRankCalculator import CodeRankCalculator
 from Chunker import chunker
+from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
+from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE
 from text_detection import BinaryDetector
 
 logger = logging.getLogger("feed")
+
 
 def _run_git(args: List[str]) -> str:
     """Run a git command and return stdout as text.
@@ -218,29 +219,29 @@ def _process_files(paths, repo, calc, persist, branch=None):
     path_list = list(paths)
     logger.info("Chunking %d files", len(path_list))
     failed_paths = []
-    for i in range(0, len(path_list), INDEXER_FILE_BATCH_SIZE):
-        logger.info("Processing batch %d-%d", i, i + INDEXER_FILE_BATCH_SIZE)
-        batch_paths = path_list[i:i + INDEXER_FILE_BATCH_SIZE]
-        all_chunks = []
-        for p in batch_paths:
-            try:
-                all_chunks.extend(chunker.chunk_file(p, repo, branch=branch))
-            except Exception as e:
-                logger.error("Failed chunking %s: %s", p, e)
-                failed_paths.append(p)
-        if not all_chunks:
-            continue
+    chunks = []
+    for path in path_list:
+        logger.info("Processing %s", path)
         try:
-            logger.info("Calculating embeddings for %d chunks of batch #%d", len(all_chunks), i)
-            texts = [c.chunk for c in all_chunks]
-            embeddings = calc.calculate_batch(texts)
-            for chunk, emb in zip(all_chunks, embeddings):
-                object.__setattr__(chunk, "embeddings", emb)
-            persist.persist_batch(all_chunks)
-            total += len(all_chunks)
+            chunks.extend(chunker.chunk_file(path, repo, branch=branch))
         except Exception as e:
-            logger.error("Embed/persist failed for batch %d-%d: %s", i, i+INDEXER_FILE_BATCH_SIZE, e)
-            failed_paths.extend(batch_paths)
+            logger.error("Failed chunking %s: %s", path, e)
+            failed_paths.append(path)
+
+        if len(chunks) >= EMBEDDING_BATCH_SIZE:
+            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE)
+            batch = chunks[:EMBEDDING_BATCH_SIZE]
+            chunks = chunks[EMBEDDING_BATCH_SIZE:]
+            try:
+                embeddings = calc.calculate_batch(batch)
+                for chunk, emb in zip(batch, embeddings):
+                    object.__setattr__(chunk, "embeddings", emb)
+                persist.persist_batch(batch)
+                total += len(embeddings)
+            except Exception as e:
+                logger.error("Embed/persist failed: %s", e)
+                failed_paths.extend(batch)
+
     return total, failed_paths
 
 

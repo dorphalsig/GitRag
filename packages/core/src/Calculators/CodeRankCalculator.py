@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_BATCH_SIZE, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
 from .EmbeddingCalculator import EmbeddingCalculator
 
 
@@ -58,10 +58,11 @@ class CodeRankCalculator(EmbeddingCalculator):
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,
-            batch_size=EMBEDDING_BATCH_SIZE,  # tune to available RAM
+            batch_size=len(chunks),
             show_progress_bar=False,
         )
         results = []
+
         for vec in vecs:
             arr = np.asarray(vec, dtype=np.float32).reshape(-1)
             if arr.shape[0] != EMBEDDING_DIMENSIONS:

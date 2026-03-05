@@ -1,4 +1,5 @@
 """Centralized project constants."""
+import os
 
 # Retriever constants
 RETRIEVAL_QUERY_PREFIX = 'QUERY_INSTRUCTION = "Given a code search query, retrieve relevant code snippets and documentation"\nQuery:'
@@ -36,10 +37,7 @@ DOC_TOML_EXTS = {"toml"}
 DOC_CSV_EXTS = {"csv"}
 DOC_TSV_EXTS = {"tsv"}
 
-# Indexer constants
-INDEXER_FILE_BATCH_SIZE = 64
-
 # Embedding constants
 EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_DIMENSIONS = 1024
-EMBEDDING_BATCH_SIZE = 32
+EMBEDDING_BATCH_SIZE = os.getenv("EMBEDDING_BATCH_SIZE", 32)
