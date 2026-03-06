@@ -123,6 +123,7 @@ class PersistInLibsql(PersistenceAdapter):
             factory = engine_factory or self._build_engine
             self._engine = factory()
             self._owns_engine = True
+        self._bootstrap()
 
     def persist_batch(self, chunks: Sequence[Chunk]) -> None:
         valid = [chunk for chunk in chunks if chunk is not None]
@@ -230,6 +231,39 @@ class PersistInLibsql(PersistenceAdapter):
         )
         conn.execute(delete_stmt, {"id": chunk_id})
         conn.execute(insert_stmt, {"id": chunk_id, "chunk": text_value})
+
+    def _bootstrap(self) -> None:
+        ddl = [
+            f"""
+            CREATE TABLE IF NOT EXISTS {self._table} (
+              id TEXT PRIMARY KEY,
+              repo TEXT NOT NULL,
+              branch TEXT,
+              path TEXT NOT NULL,
+              language TEXT NOT NULL,
+              start_row INTEGER NOT NULL,
+              start_col INTEGER NOT NULL,
+              end_row INTEGER NOT NULL,
+              end_col INTEGER NOT NULL,
+              start_bytes INTEGER NOT NULL,
+              end_bytes INTEGER NOT NULL,
+              chunk TEXT NOT NULL,
+              status TEXT NOT NULL,
+              mutation_id TEXT,
+              -- Kept for logical schema parity with postgres.
+              search_vector TEXT,
+              embedding BLOB NOT NULL
+            )
+            """,
+            f"CREATE INDEX IF NOT EXISTS {self._table}_repo_idx ON {self._table}(repo)",
+            f"CREATE INDEX IF NOT EXISTS {self._table}_repo_branch_idx ON {self._table}(repo, branch)",
+            f"CREATE INDEX IF NOT EXISTS {self._table}_path_idx ON {self._table}(path)",
+            f"CREATE INDEX IF NOT EXISTS {self._table}_repo_path_idx ON {self._table}(repo, path)",
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {self._fts_table} USING fts5(id, chunk)",
+        ]
+        with self._engine.begin() as conn:
+            for stmt in ddl:
+                conn.execute(text(stmt))
 
     def _build_engine(self) -> Engine:
         if create_engine is None:

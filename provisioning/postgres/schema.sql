@@ -1,4 +1,9 @@
--- GitRag libSQL schema
+-- GitRag PostgreSQL schema
+-- Keep embedding dimension in sync with EMBEDDING_DIMENSIONS in
+-- packages/core/src/constants.py (currently 768).
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS chunks (
   id TEXT PRIMARY KEY,
   repo TEXT NOT NULL,
@@ -14,18 +19,12 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk TEXT NOT NULL,
   status TEXT NOT NULL,
   mutation_id TEXT,
-  -- Kept for logical schema parity with postgres; populated only there.
-  search_vector TEXT,
-  -- Float32 array bytes sized to EMBEDDING_DIMENSIONS in packages/core/src/constants.py (currently 768).
-  embedding BLOB NOT NULL
+  embedding vector(768) NOT NULL,
+  search_vector tsvector
 );
 
 CREATE INDEX IF NOT EXISTS chunks_repo_idx ON chunks (repo);
 CREATE INDEX IF NOT EXISTS chunks_repo_branch_idx ON chunks (repo, branch);
 CREATE INDEX IF NOT EXISTS chunks_path_idx ON chunks (path);
 CREATE INDEX IF NOT EXISTS chunks_repo_path_idx ON chunks (repo, path);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  id UNINDEXED,
-  chunk
-);
+CREATE INDEX IF NOT EXISTS chunks_search_vector_idx ON chunks USING GIN (search_vector);

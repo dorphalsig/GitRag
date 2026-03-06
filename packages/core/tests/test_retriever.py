@@ -8,7 +8,7 @@ import pytest
 
 from Chunker.Chunk import Chunk
 from Retriever import Qwen3Reranker, Retriever
-from constants import RETRIEVAL_QUERY_PREFIX
+from constants import DEFAULT_ATTN_IMPLEMENTATION, RETRIEVAL_QUERY_PREFIX
 
 
 class StubEmbeddingCalculator:
@@ -154,7 +154,7 @@ def test_qwen3_reranker_singleton_loads_model_once() -> None:
 
     assert tok_loader.call_count == 1
     assert model_loader.call_count == 1
-    assert model_loader.call_args.kwargs["attn_implementation"] == "eager"
+    assert model_loader.call_args.kwargs["attn_implementation"] == DEFAULT_ATTN_IMPLEMENTATION
     assert fake_model.eval.call_count == 1
     assert r2 is not None
     assert scores == [0.7]

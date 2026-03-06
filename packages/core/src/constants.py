@@ -2,10 +2,10 @@
 import os
 
 # Retriever constants
-RETRIEVAL_QUERY_PREFIX = 'QUERY_INSTRUCTION = "Given a code search query, retrieve relevant code snippets and documentation"\nQuery:'
-DEFAULT_RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
-DEFAULT_RERANK_TASK_INSTRUCTION = "Given a user query and a code/document chunk, output a relevance score for retrieval reranking."
-DEFAULT_ATTN_IMPLEMENTATION = "eager"
+RETRIEVAL_QUERY_PREFIX = 'Represent this query for searching relevant code: '
+DEFAULT_RERANKER_MODEL = "jinaai/jina-reranker-v3"
+DEFAULT_RERANK_TASK_INSTRUCTION = ""
+DEFAULT_ATTN_IMPLEMENTATION = "sdpa"
 DEFAULT_INITIAL_RETRIEVAL_LIMIT = 50
 DEFAULT_TOP_K = 10
 
@@ -38,6 +38,6 @@ DOC_CSV_EXTS = {"csv"}
 DOC_TSV_EXTS = {"tsv"}
 
 # Embedding constants
-EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
-EMBEDDING_DIMENSIONS = 1024
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", 32))
+EMBEDDING_MODEL_ID = "nomic-ai/CodeRankEmbed"
+EMBEDDING_DIMENSIONS = 768
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", 64))

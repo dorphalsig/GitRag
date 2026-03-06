@@ -13,7 +13,7 @@ class FakeSentenceTransformer:
     def encode(self, text, normalize_embeddings=True):
         assert normalize_embeddings is True
         assert isinstance(text, str)
-        return np.ones(1024, dtype=np.float32)
+        return np.ones(calculator_module.EMBEDDING_DIMENSIONS, dtype=np.float32)
 
 
 class BadDimSentenceTransformer(FakeSentenceTransformer):
@@ -26,15 +26,15 @@ class FailingSentenceTransformer:
         raise RuntimeError("boom")
 
 
-def test_qwen_embedding_returns_1024_dimension_vector(monkeypatch):
+def test_embedding_returns_expected_dimension_vector(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", FakeSentenceTransformer)
 
     calc = calculator_module.CodeRankCalculator()
     raw = calc.calculate("def hello():\n    return 'world'\n")
     vec = np.frombuffer(raw, dtype=np.float32)
 
-    assert calc.dimensions == 1024
-    assert len(vec) == 1024
+    assert calc.dimensions == calculator_module.EMBEDDING_DIMENSIONS
+    assert len(vec) == calculator_module.EMBEDDING_DIMENSIONS
 
 
 def test_initializes_with_expected_model_id(monkeypatch):
@@ -42,7 +42,7 @@ def test_initializes_with_expected_model_id(monkeypatch):
 
     calc = calculator_module.CodeRankCalculator(device="cpu")
 
-    assert calc._model.model_id == "Qwen/Qwen3-Embedding-0.6B"
+    assert calc._model.model_id == calculator_module.EMBEDDING_MODEL_ID
     assert calc._model.device == "cpu"
 
 
