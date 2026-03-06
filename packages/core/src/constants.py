@@ -6,15 +6,15 @@ import os
 EMBEDDING_MODEL_ID = os.getenv("model", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_DIMENSIONS = int(os.getenv("dimensions", 1_024))
 EMBEDDING_BATCH_SIZE = int(os.getenv("batch_size", 64))
-MAX_SEQ_LENGTH =  1_024
+MAX_SEQ_LENGTH =  int(os.getenv("max_seq_length", 1_024))
 
 # Retriever constants
-RETRIEVAL_QUERY_PREFIX = 'Represent this query for searching relevant code: '
-DEFAULT_RERANKER_MODEL = "jinaai/jina-reranker-v3"
-DEFAULT_RERANK_TASK_INSTRUCTION = ""
+RETRIEVAL_QUERY_PREFIX = os.getenv("retrieval_prefix", "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:")
+DEFAULT_RERANKER_MODEL = os.getenv("reranker","jinaai/jina-reranker-v3")
+DEFAULT_RERANK_TASK_INSTRUCTION = os.getenv("rerank_instruction","")
 DEFAULT_ATTN_IMPLEMENTATION = "sdpa"
-DEFAULT_INITIAL_RETRIEVAL_LIMIT = 50
-DEFAULT_TOP_K = 10
+DEFAULT_TOP_K = int(os.getenv("topk", 10))
+DEFAULT_INITIAL_RETRIEVAL_LIMIT = DEFAULT_TOP_K*5
 
 # Persistence constants
 DEFAULT_TABLE_NAME = "chunks"
