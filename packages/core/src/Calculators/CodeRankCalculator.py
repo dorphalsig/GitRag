@@ -58,7 +58,6 @@ class CodeRankCalculator(EmbeddingCalculator):
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,
-            batch_size=len(chunks),
             show_progress_bar=False,
         )
         results = []
