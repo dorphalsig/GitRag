@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from array import array
+import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from pgvector.sqlalchemy import Vector
@@ -237,6 +238,9 @@ def _postgres_factory(
 
 
 register_persistence_adapter("postgres", _postgres_factory)
+
+# Backward compatibility for legacy absolute import paths used by older tests.
+sys.modules.setdefault("PersistPostgres", sys.modules[__name__])
 
 
 __all__ = ["PersistInPostgres"]

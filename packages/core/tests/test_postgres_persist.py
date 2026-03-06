@@ -98,7 +98,7 @@ class PostgresPersistTests(unittest.TestCase):
 
     def test_build_engine_uses_normalized_url(self):
         cfg = DBConfig(provider="postgres", url="postgresql://localhost/db", table_map={})
-        with mock.patch("PersistPostgres.create_engine") as mocked_create_engine:
+        with mock.patch("Persistence.PersistPostgres.create_engine") as mocked_create_engine:
             mocked_create_engine.return_value = mock.MagicMock()
             adapter = PersistInPostgres(cfg=cfg, dim=1024, engine_factory=lambda: mock.MagicMock())
             adapter._build_engine()

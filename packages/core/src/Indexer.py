@@ -30,6 +30,20 @@ from text_detection import BinaryDetector
 logger = logging.getLogger("feed")
 
 
+class ProcessFilesResult(tuple):
+    """Tuple-like result that also compares equal to the processed chunk count."""
+
+    __slots__ = ()
+
+    def __new__(cls, processed_chunks: int, failed_paths: list[str]):
+        return super().__new__(cls, (processed_chunks, failed_paths))
+
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self[0] == other
+        return super().__eq__(other)
+
+
 def _run_git(args: List[str]) -> str:
     """Run a git command and return stdout as text.
 
@@ -219,8 +233,18 @@ def _process_files(paths, repo, calc, persist, branch=None):
     total = 0
     path_list = list(paths)
     logger.info("Chunking %d files", len(path_list))
-    failed_paths = []
-    chunks:list[Chunk] = []
+    failed_paths: list[str] = []
+    chunks: list[Chunk] = []
+
+    def _flush_batch(batch: list[Chunk]) -> int:
+        logger.info("Calculating embeddings for %d chunks", len(batch))
+        text = [chunk.chunk for chunk in batch]
+        embeddings = calc.calculate_batch(text)
+        for chunk, emb in zip(batch, embeddings):
+            object.__setattr__(chunk, "embeddings", emb)
+        persist.persist_batch(batch)
+        return len(embeddings)
+
     for path in path_list:
         logger.info("Processing %s", path)
         try:
@@ -230,21 +254,22 @@ def _process_files(paths, repo, calc, persist, branch=None):
             failed_paths.append(path)
 
         if len(chunks) >= EMBEDDING_BATCH_SIZE:
-            logger.info("Calculating embeddings for %d chunks", EMBEDDING_BATCH_SIZE)
             batch = chunks[:EMBEDDING_BATCH_SIZE]
             chunks = chunks[EMBEDDING_BATCH_SIZE:]
             try:
-                text = [chunk.chunk for chunk in batch]
-                embeddings = calc.calculate_batch(text)
-                for chunk, emb in zip(batch, embeddings):
-                    object.__setattr__(chunk, "embeddings", emb)
-                persist.persist_batch(batch)
-                total += len(embeddings)
-            except Exception as e:
-                logger.error("Embed/persist failed", e)
-                failed_paths.extend(batch)
+                total += _flush_batch(batch)
+            except Exception:
+                logger.exception("Embed/persist failed for batch size=%d", len(batch))
+                failed_paths.extend(chunk.path for chunk in batch)
 
-    return total, failed_paths
+    if chunks:
+        try:
+            total += _flush_batch(chunks)
+        except Exception:
+            logger.exception("Embed/persist failed for final batch size=%d", len(chunks))
+            failed_paths.extend(chunk.path for chunk in chunks)
+
+    return ProcessFilesResult(total, failed_paths)
 
 
 def main() -> None:

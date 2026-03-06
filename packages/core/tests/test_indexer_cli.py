@@ -132,7 +132,7 @@ class ProcessFilesTests(unittest.TestCase):
         calc = StubCalc()
         persist = StubPersist()
         try:
-            count = Indexer._process_files(["foo.py"], "repo", calc, persist)
+            count,_ = Indexer._process_files(["foo.py"], "repo", calc, persist)
         finally:
             Indexer.chunker.chunk_file = original_chunk_file
 
