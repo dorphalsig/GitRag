@@ -11,9 +11,7 @@ class BinaryDetector:
     """Classify files as binary/text using git attributes and Magika AI."""
     _shared_magika = None
 
-    def __init__(self, git_runner: Optional[Callable[[list[str]], str]] = None,
-                 base_dir: Path | str | None = None) -> None:
-        self._git_runner = git_runner
+    def __init__(self, base_dir: Path | str | None = None) -> None:
         self._base_dir = Path(base_dir) if base_dir is not None else Path.cwd()
         # Instantiate the model once during initialization to minimize overhead
 
