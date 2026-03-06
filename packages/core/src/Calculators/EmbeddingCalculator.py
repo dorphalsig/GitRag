@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, MAX_SEQ_LENGTH
 
 logger = logging.getLogger(__name__)
 

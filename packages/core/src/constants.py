@@ -6,11 +6,7 @@ import os
 EMBEDDING_MODEL_ID = os.getenv("model", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_DIMENSIONS = int(os.getenv("dimensions", 1_024))
 EMBEDDING_BATCH_SIZE = int(os.getenv("batch_size", 64))
-MAX_RAM_GB = int(os.getenv("max_ram_gb", 16)) * 1e9
-MODEL_WEIGHT_GB = float(os.getenv("model_weight_gb", 1.1)) * 1e9
-ATN_MODEL_HEADS =  int(os.getenv("heads", 16)) #from the config.json of the model
-REP_BYTES = int(os.getenv("rep_bytes", 2)) # precision
-MAX_SEQ_LENGTH = pow(2,int(math.log2((math.sqrt(math.floor((MAX_RAM_GB-MODEL_WEIGHT_GB)*0.75)/(EMBEDDING_BATCH_SIZE*ATN_MODEL_HEADS*REP_BYTES))))))
+MAX_SEQ_LENGTH =  1_024
 
 # Retriever constants
 RETRIEVAL_QUERY_PREFIX = 'Represent this query for searching relevant code: '
