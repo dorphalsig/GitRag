@@ -28,7 +28,7 @@ class EmbeddingCalculator:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device=self._device)
             else:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
-            model.max_seq_length = MAX_SEQ_LENGTH
+            self._model.max_seq_length = MAX_SEQ_LENGTH
             logger.info("Loaded embedding model from %s", EMBEDDING_MODEL_ID)
         except Exception as e:
             msg = f"Failed to load embedding model: {EMBEDDING_MODEL_ID}"
