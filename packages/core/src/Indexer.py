@@ -20,7 +20,7 @@ import os
 import subprocess
 from typing import Dict, List, Set, Tuple
 
-from Calculators.CodeRankCalculator import CodeRankCalculator
+from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
 from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
@@ -209,13 +209,13 @@ def _env_value(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def _load_components(repo: str) -> Tuple[CodeRankCalculator, PersistenceAdapter]:
+def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter]:
     """Initialize the embedding calculator and persistence layer.
 
     Raises:
         RuntimeError: when any required env var is missing.
     """
-    calc = CodeRankCalculator()
+    calc = EmbeddingCalculator()
     cfg = _resolve_db_cfg()
     persist = create_persistence_adapter(cfg.provider, cfg=cfg, dim=calc.dimensions)
     log_target = cfg.url

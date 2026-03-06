@@ -1,5 +1,16 @@
 """Centralized project constants."""
+import math
 import os
+
+# Embedding constants
+EMBEDDING_MODEL_ID = os.getenv("model", "Qwen/Qwen3-Embedding-0.6B")
+EMBEDDING_DIMENSIONS = int(os.getenv("dimensions", 1_024))
+EMBEDDING_BATCH_SIZE = int(os.getenv("batch_size", 64))
+MAX_RAM_GB = int(os.getenv("max_ram_gb", 16)) * 1e9
+MODEL_WEIGHT_GB = float(os.getenv("model_weight_gb", 1.1)) * 1e9
+ATN_MODEL_HEADS =  int(os.getenv("heads", 16)) #from the config.json of the model
+REP_BYTES = int(os.getenv("rep_bytes", 2)) # precision
+MAX_SEQ_LENGTH = pow(2,int(math.log2((math.sqrt(math.floor((MAX_RAM_GB-MODEL_WEIGHT_GB)*0.75)/(EMBEDDING_BATCH_SIZE*ATN_MODEL_HEADS*REP_BYTES))))))
 
 # Retriever constants
 RETRIEVAL_QUERY_PREFIX = 'Represent this query for searching relevant code: '
@@ -18,14 +29,14 @@ POSTGRES_FTS_LANGUAGE = "english"
 DEFAULT_DB_PROVIDER = "libsql"
 
 # Chunker constants
-SOFT_MAX_BYTES = 16_384  # packing target
-HARD_CAP_BYTES = 24_576  # absolute per-chunk limit
+SOFT_MAX_BYTES = MAX_SEQ_LENGTH
+HARD_CAP_BYTES = MAX_SEQ_LENGTH * 2  # this is the max size chunk for code. 2 bytes / token
 NEWLINE_WINDOW = 2_048  # cut nudge window
 FALLBACK_OVERLAP_RATIO = 0.10
 
 # Document Chunker constants
-DOC_SOFT_MAX_BYTES = 8_192
-DOC_HARD_CAP_BYTES = 16_384
+DOC_SOFT_MAX_BYTES = MAX_SEQ_LENGTH * 2
+DOC_HARD_CAP_BYTES = MAX_SEQ_LENGTH * 4  # max size of text chunk: 4bytes / token
 DOC_OVERLAP_BYTES = 256
 DOC_MIN_CHUNK_BYTES = 2_048
 DOC_GRAMMAR_VERSION = "doc-chunker-v1"
@@ -36,8 +47,3 @@ DOC_YAML_EXTS = {"yaml", "yml"}
 DOC_TOML_EXTS = {"toml"}
 DOC_CSV_EXTS = {"csv"}
 DOC_TSV_EXTS = {"tsv"}
-
-# Embedding constants
-EMBEDDING_MODEL_ID = "nomic-ai/CodeRankEmbed"
-EMBEDDING_DIMENSIONS = 768
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", 64))

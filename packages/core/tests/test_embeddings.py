@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import src.Calculators.CodeRankCalculator as calculator_module
+import src.Calculators.EmbeddingCalculator as calculator_module
 
 
 class FakeSentenceTransformer:
@@ -29,7 +29,7 @@ class FailingSentenceTransformer:
 def test_embedding_returns_expected_dimension_vector(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", FakeSentenceTransformer)
 
-    calc = calculator_module.CodeRankCalculator()
+    calc = calculator_module.EmbeddingCalculator()
     raw = calc.calculate("def hello():\n    return 'world'\n")
     vec = np.frombuffer(raw, dtype=np.float32)
 
@@ -40,7 +40,7 @@ def test_embedding_returns_expected_dimension_vector(monkeypatch):
 def test_initializes_with_expected_model_id(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", FakeSentenceTransformer)
 
-    calc = calculator_module.CodeRankCalculator(device="cpu")
+    calc = calculator_module.EmbeddingCalculator(device="cpu")
 
     assert calc._model.model_id == calculator_module.EMBEDDING_MODEL_ID
     assert calc._model.device == "cpu"
@@ -50,12 +50,12 @@ def test_raises_runtime_error_when_model_fails_to_load(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", FailingSentenceTransformer)
 
     with pytest.raises(RuntimeError, match="Failed to load embedding model"):
-        calculator_module.CodeRankCalculator()
+        calculator_module.EmbeddingCalculator()
 
 
 def test_raises_when_embedding_dimension_is_unexpected(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", BadDimSentenceTransformer)
 
-    calc = calculator_module.CodeRankCalculator()
+    calc = calculator_module.EmbeddingCalculator()
     with pytest.raises(ValueError, match="Unexpected embedding dimension"):
         calc.calculate("x")

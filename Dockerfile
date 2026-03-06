@@ -52,7 +52,7 @@ if __name__ == "__main__":\n\
     try:\n\
         from Persistence.Persist import Persist as PersistInLibsql\n\
         from Retriever import Retriever, Qwen3Reranker\n\
-        from Calculators.CodeRankCalculator import CodeRankCalculator\n\
+        from Calculators.EmbeddingCalculator import EmbeddingCalculator\n\
         from gitrag_mcp_server.server import create_mcp_server\n\
     except ImportError as e:\n\
         sys.stderr.write(f"FATAL: Failed to import GitRag modules: {e}\\n")\n\
@@ -62,7 +62,7 @@ if __name__ == "__main__":\n\
     \n\
     # 3. Initialize Models & DB\n\
     print("Loading Embedding Model (Qwen3-0.6B)...")\n\
-    calculator = CodeRankCalculator()\n\
+    calculator = EmbeddingCalculator()\n\
     \n\
     print("Connecting to LibSQL...")\n\
     persistence = PersistInLibsql(db_url, db_token)\n\

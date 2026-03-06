@@ -209,6 +209,7 @@ class PersistInLibsql(PersistenceAdapter):
             "chunk": chunk.chunk,
             "status": "committed",
             "mutation_id": None,
+            "search_vector": chunk.chunk,
             "embedding": chunk.embeddings,
         }
 
@@ -216,12 +217,12 @@ class PersistInLibsql(PersistenceAdapter):
     def _upsert_sql(self) -> str:
         return (
             f"INSERT INTO {self._table} (id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
-            "start_bytes, end_bytes, chunk, status, mutation_id, embedding) "
-            "VALUES (:id, :repo, :branch, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :embedding) "
+            "start_bytes, end_bytes, chunk, status, mutation_id, search_vector, embedding) "
+            "VALUES (:id, :repo, :branch, :path, :language, :start_row, :start_col, :end_row, :end_col, :start_bytes, :end_bytes, :chunk, :status, :mutation_id, :search_vector, :embedding) "
             "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch, path=excluded.path, language=excluded.language, "
             "start_row=excluded.start_row, start_col=excluded.start_col, end_row=excluded.end_row, end_col=excluded.end_col, "
             "start_bytes=excluded.start_bytes, end_bytes=excluded.end_bytes, chunk=excluded.chunk, status=excluded.status, "
-            "mutation_id=excluded.mutation_id, embedding=excluded.embedding"
+            "mutation_id=excluded.mutation_id, search_vector=excluded.search_vector, embedding=excluded.embedding"
         )
 
     def _refresh_fts(self, conn, chunk_id: str, text_value: str) -> None:
@@ -264,6 +265,14 @@ class PersistInLibsql(PersistenceAdapter):
         with self._engine.begin() as conn:
             for stmt in ddl:
                 conn.execute(text(stmt))
+            self._ensure_column(conn, "search_vector", "TEXT")
+
+    def _ensure_column(self, conn, column_name: str, column_type: str) -> None:
+        rows = conn.execute(text(f"PRAGMA table_info({self._table})")).mappings().all()
+        existing = {row.get("name") for row in rows}
+        if column_name in existing:
+            return
+        conn.execute(text(f"ALTER TABLE {self._table} ADD COLUMN {column_name} {column_type}"))
 
     def _build_engine(self) -> Engine:
         if create_engine is None:
