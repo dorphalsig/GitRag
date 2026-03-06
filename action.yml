@@ -29,8 +29,8 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/huggingface
-        key: hf-qwen3-embedding-0.6b-${{ hashFiles('requirements.txt') }}
-        restore-keys: hf-qwen3-embedding-0.6b-
+        key: huggingface-${{ hashFiles('packages/core/src/constants.py') }}
+        restore-keys: huggingface-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
