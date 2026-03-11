@@ -7,6 +7,9 @@ EMBEDDING_MODEL_ID = os.getenv("model", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_DIMENSIONS = int(os.getenv("dimensions", 1_024))
 EMBEDDING_BATCH_SIZE = int(os.getenv("batch_size", 64))
 MAX_SEQ_LENGTH =  int(os.getenv("max_seq_length", 1_024))
+DYNAMIC_SEQ_LENGTH = os.getenv("DYNAMIC_SEQ_LENGTH", "true").lower() == "true"
+SOFT_TIMEOUT_SECONDS = int(os.getenv("SOFT_TIMEOUT", 0))
+EXIT_CODE_TIMEOUT = 75
 
 # Retriever constants
 RETRIEVAL_QUERY_PREFIX = os.getenv("retrieval_prefix", "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:")
