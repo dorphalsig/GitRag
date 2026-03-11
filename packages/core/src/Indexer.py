@@ -20,7 +20,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, NamedTuple, Set, Tuple
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
@@ -32,21 +32,16 @@ from text_detection import BinaryDetector
 logger = logging.getLogger("feed")
 
 
-class ProcessFilesResult(tuple):
-    """Tuple-like result that also compares equal to the processed chunk count."""
+class ProcessFilesResult(NamedTuple):
+    """Named tuple result for _process_files."""
 
-    __slots__ = ("timed_out",)
+    processed_chunks: int
+    failed_paths: list[str]
+    timed_out: bool = False
 
-    def __new__(cls, processed_chunks: int, failed_paths: list[str], timed_out: bool = False):
-        obj = super().__new__(cls, (processed_chunks, failed_paths))
-        return obj
-
-    def __init__(self, processed_chunks: int, failed_paths: list[str], timed_out: bool = False):
-        self.timed_out = timed_out
-
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, int):
-            return self[0] == other
+            return self.processed_chunks == other
         return super().__eq__(other)
 
 
@@ -235,10 +230,11 @@ def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter
     return calc, persist
 
 
-def _process_files(paths, repo, calc, persist, branch=None, skip_paths: set[str] = frozenset(), start_time: float | None = None):
+def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str] | None = None, start_time: float | None = None):
     total = 0
     all_paths = list(paths)
-    path_list = [p for p in all_paths if p not in skip_paths]
+    _skip = skip_paths if skip_paths is not None else set()
+    path_list = [p for p in all_paths if p not in _skip]
     skipped = len(all_paths) - len(path_list)
     if skipped:
         logger.info("Checkpointing: skipping %d already-indexed paths", skipped)
