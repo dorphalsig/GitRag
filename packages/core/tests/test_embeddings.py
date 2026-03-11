@@ -35,7 +35,7 @@ class OnnxFallbackSentenceTransformer:
 
 
 class BadDimSentenceTransformer(FakeSentenceTransformer):
-    def encode(self, text, normalize_embeddings=True):
+    def encode(self, text, normalize_embeddings=True, batch_size=None, show_progress_bar=None):
         return np.ones(10, dtype=np.float32)
 
 
@@ -60,6 +60,7 @@ def test_initializes_with_expected_model_id(monkeypatch):
 
     calc = calculator_module.EmbeddingCalculator(device="cpu")
 
+    assert calc._model is not None
     assert calc._model.model_id == calculator_module.EMBEDDING_MODEL_ID
     assert calc._model.device == "cpu"
 
@@ -119,4 +120,5 @@ def test_dynamic_seq_length_adjusts_for_batch(monkeypatch):
     calc.calculate_batch(short_chunks)
 
     # Seq length should be reduced (not 1024)
+    assert calc._model is not None
     assert calc._model.seq_length_history[-1] < 1024

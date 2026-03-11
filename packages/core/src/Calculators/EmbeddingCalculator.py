@@ -30,7 +30,7 @@ class EmbeddingCalculator:
     """
 
     def __init__(self, device: Optional[str] = None, dynamic_seq_length: bool | None = None) -> None:
-        self._model = None
+        self._model: Optional[SentenceTransformer] = None
         self._device = device
         self._dynamic_seq_length = dynamic_seq_length if dynamic_seq_length is not None else DYNAMIC_SEQ_LENGTH
         self._load_model()
@@ -56,6 +56,7 @@ class EmbeddingCalculator:
             else:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
 
+            assert self._model is not None
             self._model.max_seq_length = MAX_SEQ_LENGTH
             logger.info("Loaded embedding model from %s", EMBEDDING_MODEL_ID)
         except Exception as e:
@@ -72,6 +73,7 @@ class EmbeddingCalculator:
         """
         Compute an embedding for the given text and return it as float32 bytes.
         """
+        assert self._model is not None
         vec = self._model.encode(chunk, normalize_embeddings=True)
         arr = np.asarray(vec, dtype=np.float32).reshape(-1)
         if arr.shape[0] != EMBEDDING_DIMENSIONS:
@@ -82,8 +84,10 @@ class EmbeddingCalculator:
         return arr.tobytes()
 
     def calculate_batch(self, chunks: list[str]) -> list[bytes]:
-        if self._dynamic_seq_length and hasattr(self._model, 'tokenizer'):
-            max_tokens = max(len(self._model.tokenizer.encode(c)) for c in chunks)
+        assert self._model is not None
+        tokenizer = getattr(self._model, 'tokenizer', None)
+        if self._dynamic_seq_length and tokenizer is not None:
+            max_tokens = max(len(tokenizer.encode(c)) for c in chunks)
             adjusted_len = min(_next_power_of_2(max_tokens + 16), MAX_SEQ_LENGTH)
             self._model.max_seq_length = adjusted_len
         vecs = self._model.encode(
