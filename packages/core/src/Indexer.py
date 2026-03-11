@@ -20,7 +20,8 @@ import os
 import subprocess
 import sys
 import time
-from typing import Dict, List, NamedTuple, Set, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterator, List, Set, Tuple
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
@@ -32,17 +33,34 @@ from text_detection import BinaryDetector
 logger = logging.getLogger("feed")
 
 
-class ProcessFilesResult(NamedTuple):
-    """Named tuple result for _process_files."""
+@dataclass(frozen=True)
+class ProcessFilesResult:
+    """Result for _process_files with backward-compatible tuple-style access."""
 
     processed_chunks: int
     failed_paths: list[str]
     timed_out: bool = False
 
+    def __iter__(self) -> Iterator[object]:
+        yield self.processed_chunks
+        yield self.failed_paths
+
+    def __getitem__(self, index: int):
+        if index == 0:
+            return self.processed_chunks
+        if index == 1:
+            return self.failed_paths
+        if index == 2:
+            return self.timed_out
+        raise IndexError(index)
+
+    def __len__(self) -> int:
+        return 2
+
     def __eq__(self, other: object) -> bool:
         if isinstance(other, int):
             return self.processed_chunks == other
-        return super().__eq__(other)
+        return (self.processed_chunks, self.failed_paths) == other
 
 
 def _run_git(args: List[str]) -> str:
@@ -153,7 +171,7 @@ def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) 
     if not paths:
         return set()
 
-    detector = detector or BinaryDetector(_run_git)
+    detector = detector or BinaryDetector()
     text: Set[str] = set()
     for p in sorted(paths):
         try:
@@ -256,7 +274,6 @@ def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str]
         if start_time is not None and SOFT_TIMEOUT_SECONDS > 0:
             elapsed = time.time() - start_time
             if elapsed >= SOFT_TIMEOUT_SECONDS:
-                logger.warning("Soft timeout reached after %.0fs, stopping gracefully", elapsed)
                 return ProcessFilesResult(total, failed_paths, timed_out=True)
         logger.info("Processing %s", path)
         try:
@@ -304,7 +321,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    detector = BinaryDetector(_run_git)
+    detector = BinaryDetector()
     logger.info("Starting indexer for repo=%s branch=%s", args.repo, args.branch or "<none>")
 
     if args.full:

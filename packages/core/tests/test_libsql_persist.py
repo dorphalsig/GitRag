@@ -1,4 +1,4 @@
-import os
+import tempfile
 import unittest
 from array import array
 from pathlib import Path
@@ -17,13 +17,6 @@ from Chunker.Chunk import Chunk  # type: ignore
 from Persistence.Persist import LibsqlConfig, create_persistence_adapter  # type: ignore
 
 
-def _required_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise unittest.SkipTest(f"{name} env variable required for libSQL persistence tests")
-    return value
-
-
 def _build_chunk(repo: str, path: str) -> Chunk:
     chunk = Chunk(
         chunk="print('hello libsql')\n",
@@ -40,53 +33,19 @@ def _build_chunk(repo: str, path: str) -> Chunk:
     object.__setattr__(chunk, "embeddings", vec.tobytes())
     return chunk
 
-
-def _bootstrap_schema(engine) -> None:
-    statements = [
-        """
-        CREATE TABLE IF NOT EXISTS chunks (
-          id TEXT PRIMARY KEY,
-          repo TEXT NOT NULL,
-          branch TEXT,
-          path TEXT NOT NULL,
-          language TEXT NOT NULL,
-          start_row INTEGER NOT NULL,
-          start_col INTEGER NOT NULL,
-          end_row INTEGER NOT NULL,
-          end_col INTEGER NOT NULL,
-          start_bytes INTEGER NOT NULL,
-          end_bytes INTEGER NOT NULL,
-          chunk TEXT NOT NULL,
-          status TEXT NOT NULL,
-          mutation_id TEXT,
-          embedding BLOB NOT NULL
-        )
-        """,
-        "CREATE INDEX IF NOT EXISTS chunks_repo_idx ON chunks(repo)",
-        "CREATE INDEX IF NOT EXISTS chunks_path_idx ON chunks(path)",
-        "CREATE INDEX IF NOT EXISTS chunks_repo_path_idx ON chunks(repo, path)",
-        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(id, chunk)",
-    ]
-    with engine.begin() as conn:
-        for stmt in statements:
-            conn.execute(text(stmt))
-
-
 class LibsqlPersistenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._database_url = _required_env("TURSO_DATABASE_URL")
-        cls._auth_token = _required_env("TURSO_AUTH_TOKEN")
-        cls._engine = create_engine(
-            f"sqlite+{cls._database_url}?secure=true",
-            future=True,
-            connect_args={"auth_token": cls._auth_token},
-        )
-        _bootstrap_schema(cls._engine)
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls._db_path = Path(cls._tmpdir.name) / "libsql-test.sqlite3"
+        cls._database_url = "libsql://local-test-db"
+        cls._auth_token = None
+        cls._engine = create_engine(f"sqlite+pysqlite:///{cls._db_path}", future=True)
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls._engine.dispose()
+        cls._tmpdir.cleanup()
 
     def setUp(self) -> None:
         self.repo = f"tests/libsql/{uuid4().hex}"
