@@ -11,6 +11,10 @@ on:
         required: false
         type: boolean
         default: false
+      retry_count:
+        required: false
+        type: number
+        default: 0
     secrets:
       DATABASE_URL:
         required: true
@@ -31,6 +35,8 @@ jobs:
           fetch-depth: 0 # Required for git diff
 
       - name: Run GitRag Indexer
+        id: run_indexer
+        continue-on-error: true
         uses: dorphalsig/gitrag@master
         with:
           repo: ${{ github.repository }}
@@ -39,3 +45,16 @@ jobs:
           database_url: ${{ secrets.DATABASE_URL }}
           db_auth_token: ${{ secrets.DB_AUTH_TOKEN }}
           full_index: ${{ inputs.full_index }}
+
+      - name: Retry on soft timeout
+        if: steps.run_indexer.outcome == 'failure' && inputs.retry_count < 3
+        run: |
+          NEXT_COUNT=$(( ${{ inputs.retry_count }} + 1 ))
+          echo "Retrying workflow. Attempt $NEXT_COUNT"
+          gh workflow run "${{ github.workflow }}" --ref "${{ github.ref }}" -f full_index=true -f retry_count=$NEXT_COUNT -f db_provider="${{ inputs.db_provider }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail if indexer failed (non-timeout or max retries)
+        if: steps.run_indexer.outcome == 'failure' && inputs.retry_count >= 3
+        run: exit 1
