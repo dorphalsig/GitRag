@@ -4,9 +4,22 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, MAX_SEQ_LENGTH
+from constants import DYNAMIC_SEQ_LENGTH, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, MAX_SEQ_LENGTH
 
 logger = logging.getLogger(__name__)
+
+
+def _next_power_of_2(n: int) -> int:
+    """Return the smallest power of 2 >= n, minimum 32."""
+    if n <= 32:
+        return 32
+    n -= 1
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    return n + 1
 
 
 class EmbeddingCalculator:
@@ -16,9 +29,10 @@ class EmbeddingCalculator:
     Returns float32 embeddings as bytes (little-endian).
     """
 
-    def __init__(self, device: Optional[str] = None) -> None:
+    def __init__(self, device: Optional[str] = None, dynamic_seq_length: bool | None = None) -> None:
         self._model = None
         self._device = device
+        self._dynamic_seq_length = dynamic_seq_length if dynamic_seq_length is not None else DYNAMIC_SEQ_LENGTH
         self._load_model()
 
     def _load_model(self) -> None:
@@ -68,6 +82,10 @@ class EmbeddingCalculator:
         return arr.tobytes()
 
     def calculate_batch(self, chunks: list[str]) -> list[bytes]:
+        if self._dynamic_seq_length and hasattr(self._model, 'tokenizer'):
+            max_tokens = max(len(self._model.tokenizer.encode(c)) for c in chunks)
+            adjusted_len = min(_next_power_of_2(max_tokens + 16), MAX_SEQ_LENGTH)
+            self._model.max_seq_length = adjusted_len
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,
