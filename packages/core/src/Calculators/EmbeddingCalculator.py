@@ -24,10 +24,24 @@ class EmbeddingCalculator:
     def _load_model(self) -> None:
         """Load the Qwen3 embedding model."""
         try:
-            if self._device:
+            # Attempt ONNX if on CPU
+            if self._device == "cpu" or self._device is None:
+                try:
+                    self._model = SentenceTransformer(
+                        EMBEDDING_MODEL_ID,
+                        trust_remote_code=True,
+                        device="cpu",
+                        backend="onnx"
+                    )
+                    logger.info("Loaded embedding model with ONNX backend")
+                except Exception as e:
+                    logger.warning("Failed to load model with ONNX backend, falling back to PyTorch: %r", e)
+                    self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device="cpu")
+            elif self._device:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device=self._device)
             else:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
+
             self._model.max_seq_length = MAX_SEQ_LENGTH
             logger.info("Loaded embedding model from %s", EMBEDDING_MODEL_ID)
         except Exception as e:
