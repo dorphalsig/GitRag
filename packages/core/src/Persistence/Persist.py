@@ -48,6 +48,10 @@ class PersistenceAdapter(Protocol):
         branch: str | None = None,
     ) -> List[Chunk]: ...
 
+    def get_indexed_paths(self) -> set[str]:
+        """Return the set of file paths that have already been indexed."""
+        ...
+
 
 @dataclass(frozen=True)
 class DBConfig:
