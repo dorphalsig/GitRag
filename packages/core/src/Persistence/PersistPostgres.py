@@ -192,6 +192,12 @@ class PersistInPostgres(PersistenceAdapter):
             rows = conn.execute(sql, params).mappings().all()
         return [self._row_to_chunk(dict(row)) for row in rows]
 
+    def get_indexed_paths(self) -> set[str]:
+        sql = text(f"SELECT DISTINCT path FROM {self._table}")
+        with self._engine.connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return {row[0] for row in rows}
+
     def _decode_embedding(self, raw: bytes) -> List[float]:
         if len(raw) != self._dim * 4:
             raise ValueError(f"Embedding size mismatch: expected {self._dim * 4} bytes, got {len(raw)}")

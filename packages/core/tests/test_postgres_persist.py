@@ -84,6 +84,32 @@ class PostgresPersistTests(unittest.TestCase):
         self.assertIn("DELETE FROM chunks WHERE path IN", str(stmt))
         self.assertEqual(params["paths"], ("a.py", "b.py"))
 
+    def test_get_indexed_paths_returns_distinct_paths(self):
+        engine, _ = self._fake_engine()
+        # Set up engine.connect() as a context manager returning a connection
+        conn_read = mock.MagicMock()
+        ctx_read = mock.MagicMock()
+        ctx_read.__enter__.return_value = conn_read
+        ctx_read.__exit__.return_value = False
+        engine.connect.return_value = ctx_read
+
+        cfg = DBConfig(provider="postgres", url="postgresql://localhost/db", table_map={})
+        adapter = PersistInPostgres(cfg=cfg, dim=1024, engine=engine)
+
+        # Simulate rows returned by DISTINCT path query
+        conn_read.execute.return_value.fetchall.return_value = [
+            ("src/a.py",),
+            ("src/b.py",),
+            ("src/c.py",),
+        ]
+
+        result = adapter.get_indexed_paths()
+
+        self.assertIsInstance(result, set)
+        self.assertEqual(result, {"src/a.py", "src/b.py", "src/c.py"})
+        sql_called = str(conn_read.execute.call_args.args[0])
+        self.assertIn("SELECT DISTINCT path FROM", sql_called)
+
     def test_registry_can_create_postgres_adapter(self):
         engine, _ = self._fake_engine()
         cfg = DBConfig(provider="postgres", url="postgresql://localhost/db", table_map={})
