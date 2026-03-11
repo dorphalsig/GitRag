@@ -2,6 +2,7 @@ import os
 import unittest
 from array import array
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from sqlalchemy import create_engine, text
@@ -152,6 +153,71 @@ class LibsqlPersistenceTests(unittest.TestCase):
                 {"id": chunk.id()},
             ).scalar_one()
             self.assertEqual(fts_remaining, 0)
+
+
+class GetIndexedPathsTests(unittest.TestCase):
+    """Unit tests for PersistInLibsql.get_indexed_paths using mocks (no real DB)."""
+
+    def _make_adapter(self, mock_engine):
+        """Build a PersistInLibsql with a fully mocked engine bypassing bootstrap."""
+        from Persistence.Persist import LibsqlConfig, PersistInLibsql  # type: ignore
+
+        cfg = LibsqlConfig.from_parts(database_url="libsql://localhost:8080")
+        with patch.object(PersistInLibsql, "_bootstrap"):
+            adapter = PersistInLibsql(cfg=cfg, dim=768, engine=mock_engine)
+        return adapter
+
+    def _make_engine_returning(self, rows):
+        """Return a mock engine whose connect() context manager yields rows."""
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = rows
+
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_conn)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_ctx
+        # begin() is called by _bootstrap (patched away), but mock it anyway
+        mock_begin_ctx = MagicMock()
+        mock_begin_ctx.__enter__ = MagicMock(return_value=MagicMock())
+        mock_begin_ctx.__exit__ = MagicMock(return_value=False)
+        mock_engine.begin.return_value = mock_begin_ctx
+        return mock_engine
+
+    def test_returns_empty_set_when_no_chunks(self):
+        """get_indexed_paths returns an empty set when the table has no rows."""
+        mock_engine = self._make_engine_returning([])
+        adapter = self._make_adapter(mock_engine)
+
+        result = adapter.get_indexed_paths()
+
+        self.assertIsInstance(result, set)
+        self.assertEqual(result, set())
+
+    def test_returns_paths_from_chunks(self):
+        """get_indexed_paths returns the distinct paths present in the chunks table."""
+        rows = [("src/foo.py",), ("src/bar.py",), ("README.md",)]
+        mock_engine = self._make_engine_returning(rows)
+        adapter = self._make_adapter(mock_engine)
+
+        result = adapter.get_indexed_paths()
+
+        self.assertIsInstance(result, set)
+        self.assertEqual(result, {"src/foo.py", "src/bar.py", "README.md"})
+
+    def test_queries_with_distinct(self):
+        """get_indexed_paths issues a DISTINCT query against the chunks table."""
+        mock_engine = self._make_engine_returning([])
+        adapter = self._make_adapter(mock_engine)
+
+        adapter.get_indexed_paths()
+
+        mock_conn = mock_engine.connect.return_value.__enter__.return_value
+        call_args = mock_conn.execute.call_args
+        executed_sql = str(call_args[0][0])
+        self.assertIn("DISTINCT", executed_sql.upper())
+        self.assertIn("path", executed_sql.lower())
 
 
 if __name__ == "__main__":  # pragma: no cover

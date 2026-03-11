@@ -160,6 +160,13 @@ class PersistInLibsql(PersistenceAdapter):
             conn.execute(delete_stmt, {"paths": tuple(paths)})
             conn.execute(delete_fts_stmt)
 
+    def get_indexed_paths(self) -> set[str]:
+        """Return the set of distinct file paths stored in the chunks table."""
+        sql = text(f"SELECT DISTINCT path FROM {self._table}")
+        with self._engine.connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return {row[0] for row in rows if row[0] is not None}
+
     def close(self) -> None:
         if getattr(self, "_owns_engine", True):
             dispose = getattr(self._engine, "dispose", None)
