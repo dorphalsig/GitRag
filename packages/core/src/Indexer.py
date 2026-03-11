@@ -18,13 +18,15 @@ import json
 import logging
 import os
 import subprocess
+import sys
+import time
 from typing import Dict, List, Set, Tuple
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
 from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
-from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE
+from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE, SOFT_TIMEOUT_SECONDS, EXIT_CODE_TIMEOUT
 from text_detection import BinaryDetector
 
 logger = logging.getLogger("feed")
@@ -33,10 +35,14 @@ logger = logging.getLogger("feed")
 class ProcessFilesResult(tuple):
     """Tuple-like result that also compares equal to the processed chunk count."""
 
-    __slots__ = ()
+    __slots__ = ("timed_out",)
 
-    def __new__(cls, processed_chunks: int, failed_paths: list[str]):
-        return super().__new__(cls, (processed_chunks, failed_paths))
+    def __new__(cls, processed_chunks: int, failed_paths: list[str], timed_out: bool = False):
+        obj = super().__new__(cls, (processed_chunks, failed_paths))
+        return obj
+
+    def __init__(self, processed_chunks: int, failed_paths: list[str], timed_out: bool = False):
+        self.timed_out = timed_out
 
     def __eq__(self, other):
         if isinstance(other, int):
@@ -229,9 +235,13 @@ def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter
     return calc, persist
 
 
-def _process_files(paths, repo, calc, persist, branch=None):
+def _process_files(paths, repo, calc, persist, branch=None, skip_paths: set[str] = frozenset(), start_time: float | None = None):
     total = 0
-    path_list = list(paths)
+    all_paths = list(paths)
+    path_list = [p for p in all_paths if p not in skip_paths]
+    skipped = len(all_paths) - len(path_list)
+    if skipped:
+        logger.info("Checkpointing: skipping %d already-indexed paths", skipped)
     logger.info("Chunking %d files", len(path_list))
     failed_paths: list[str] = []
     chunks: list[Chunk] = []
@@ -246,6 +256,12 @@ def _process_files(paths, repo, calc, persist, branch=None):
         return len(embeddings)
 
     for path in path_list:
+        # Check soft timeout before processing each file
+        if start_time is not None and SOFT_TIMEOUT_SECONDS > 0:
+            elapsed = time.time() - start_time
+            if elapsed >= SOFT_TIMEOUT_SECONDS:
+                logger.warning("Soft timeout reached after %.0fs, stopping gracefully", elapsed)
+                return ProcessFilesResult(total, failed_paths, timed_out=True)
         logger.info("Processing %s", path)
         try:
             chunks.extend(chunker.chunk_file(path, repo, branch=branch))
@@ -309,6 +325,8 @@ def main() -> None:
 
     calc, persist = _load_components(args.repo)
 
+    already_indexed: set[str] = persist.get_indexed_paths() if args.full else set()
+
     deleted_count = 0
     if to_del:
         try:
@@ -317,7 +335,17 @@ def main() -> None:
         except Exception as e:
             logger.error("Deletion pass failed: %s", e)
 
-    processed_chunks, failed_files = _process_files(sorted(text_to_proc), args.repo, calc, persist, branch=args.branch)
+    start_time = time.time()
+    result = _process_files(
+        sorted(text_to_proc),
+        args.repo,
+        calc,
+        persist,
+        branch=args.branch,
+        skip_paths=already_indexed,
+        start_time=start_time,
+    )
+    processed_chunks, failed_files = result[0], result[1]
 
     summary = {
         "repo": args.repo,
@@ -328,9 +356,14 @@ def main() -> None:
         "processed_chunks": processed_chunks,
         "skipped_binary": skipped_binary,
         "actions": actions,
-        "failed_paths": failed_files
+        "failed_paths": failed_files,
+        "timeout": result.timed_out,
     }
     print(json.dumps(summary, ensure_ascii=False))
+
+    if result.timed_out:
+        sys.exit(EXIT_CODE_TIMEOUT)
+
     if failed_files:
         exit(1)
 
