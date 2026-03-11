@@ -21,6 +21,10 @@ inputs:
   branch:
     description: "Branch name"
     required: false
+  soft_timeout:
+    description: "Soft timeout in seconds. Indexer exits with code 75 when exceeded, enabling workflow retry."
+    required: false
+    default: "0"
 
 runs:
   using: "composite"
@@ -47,6 +51,7 @@ runs:
         DATABASE_URL: ${{ inputs.database_url }}
         DB_AUTH_TOKEN: ${{ inputs.db_auth_token }}
         PYTHONPATH: ${{ github.action_path }}/packages/core/src
+        SOFT_TIMEOUT: ${{ inputs.soft_timeout }}
       run: |
         ARGS=""
         [ "${{ inputs.full_index }}" = "true" ] && ARGS="--full"
