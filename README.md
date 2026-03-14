@@ -57,6 +57,70 @@ jobs:
       DB_AUTH_TOKEN: ${{ secrets.dark }}
 ```
 
+### Handling Timeouts for Large Repositories
+
+For large repositories (500+ files), indexing may exceed GitHub Actions' 6-hour timeout. GitRag supports **soft timeouts** with automatic resume via database checkpointing.
+
+**How Resume Works:**
+1. On startup with `full_index: true`, GitRag queries the database for already-indexed paths
+2. Files already in the database are skipped during processing
+3. Since the database is remote, checkpointing works across different workflow runs and runners
+4. When a soft timeout is exceeded, the indexer exits with code 75, allowing the workflow to retry
+
+**Recommended Retry Pattern:**
+
+```yaml
+name: GitRag Indexing with Retry
+
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Perform a full repository scan?'
+        type: boolean
+        default: false
+
+jobs:
+  index:
+    uses: dorphalsig/gitrag/.github/workflows/GitRag.yml@master
+    with:
+      repo: ${{ github.repository }}
+      db_provider: "libsql"
+      full_index: ${{ inputs.full_scan || false }}
+      soft_timeout: 14400  # 4 hours - adjust based on repo size
+    secrets:
+      DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      DB_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+
+  # Retry on timeout - dispatches new workflow with fresh 6-hour window
+  retry-on-timeout:
+    needs: index
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger retry with full_index
+        run: |
+          gh workflow run "${{ github.workflow }}" \
+            --ref "${{ github.ref }}" \
+            -f full_scan=true \
+            -f db_provider="libsql"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Timeout Recommendations:**
+
+| Repo Size | Suggested `soft_timeout` | Expected Retries |
+|-----------|-------------------------|------------------|
+| < 500 files | 0 (disabled) | 0 |
+| 500-2000 files | 14400 (4h) | 1-2 |
+| 2000-5000 files | 10800 (3h) | 2-4 |
+| 5000+ files | 7200 (2h) | 4+ |
+
+**Important:** Always use `full_index: true` on retry to trigger the resume mechanism. Incremental mode (`--from-sha`/`--to-sha`) does not use checkpointing.
+
 ### Hugging Face Spaces (The Retriever)
 Deploy as a **Docker** Space to host a search API or MCP server. For this use the [Dockerfile](Dockerfile).
 
