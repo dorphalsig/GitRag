@@ -29,12 +29,6 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Cache Hugging Face models
-      uses: actions/cache@v4
-      with:
-        path: ${{ github.workspace }}/.cache/huggingface
-        key: huggingface-${{ github.workflow }}-${{ github.repository }}-${{ github.action_ref }}
-        restore-keys: huggingface-huggingface-${{ github.workflow }}-${{ github.repository }}
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -46,7 +40,6 @@ runs:
     - name: Index Repo
       shell: bash
       env:
-        HF_HOME: ${{ github.workspace }}/.cache/huggingface
         DB_PROVIDER: ${{ inputs.db_provider }}
         DATABASE_URL: ${{ inputs.database_url }}
         DB_AUTH_TOKEN: ${{ inputs.db_auth_token }}
