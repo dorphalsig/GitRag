@@ -110,15 +110,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**Timeout Recommendations:**
-
-| Repo Size | Suggested `soft_timeout` | Expected Retries |
-|-----------|-------------------------|------------------|
-| < 500 files | 0 (disabled) | 0 |
-| 500-2000 files | 14400 (4h) | 1-2 |
-| 2000-5000 files | 10800 (3h) | 2-4 |
-| 5000+ files | 7200 (2h) | 4+ |
-
 **Important:** Always use `full_index: true` on retry to trigger the resume mechanism. Incremental mode (`--from-sha`/`--to-sha`) does not use checkpointing.
 
 ### Hugging Face Spaces (The Retriever)
