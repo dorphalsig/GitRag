@@ -119,32 +119,30 @@ def _clone_block(block: DocBlock, start_char: int, end_char: int) -> DocBlock:
     )
 
 
-def chunk_file(path: str, repo: str, branch: str | None = None) -> List[Chunk]:
+def chunk_file(path: str, repo: str, branch: str | None = None) -> Iterable[Chunk]:
     path_obj = Path(path)
     file_extension = path_obj.suffix.lower().lstrip(".")
     contents = path_obj.read_bytes()
     if not contents:
-        return []
+        return
 
     mapper = LineMapper(contents)
 
     if lang := CODE_EXTENSIONS.get(file_extension, None):
-        chunks = _chunk_code(contents, path, lang, repo, mapper, branch=branch)
+        yield from _chunk_code(contents, path, lang, repo, mapper, branch=branch)
     elif file_extension in (
             DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS
     ):
-        chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
+        yield from _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
     elif lang := NONCODE_TS_GRAMMAR.get(file_extension, None):
-        chunks = _chunk_non_code(contents, path, lang, repo, mapper, branch=branch)
+        yield from _chunk_non_code(contents, path, lang, repo, mapper, branch=branch)
     else:
-        chunks = _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
-    logger.debug("Parsed %s into %d chunks.", path, len(chunks))
-    return chunks
+        yield from _chunk_document(contents, path, file_extension, repo, mapper, branch=branch)
 
 
 def _chunk_non_code(
         contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     """
     Chunk a non-code file using Tree-sitter:
       1) Choose a significant base level (root or its dominant single child).
@@ -168,21 +166,22 @@ def _chunk_non_code(
 
     # Whole-file small case: emit a single chunk from the **original contents** and stop.
     if (root.end_byte - root.start_byte) < SOFT_MAX_BYTES:
-        return [_make_chunk(contents, root.start_byte, root.end_byte, path, language, repo, mapper, branch=branch)]
+        yield _make_chunk(contents, root.start_byte, root.end_byte, path, language, repo, mapper, branch=branch)
+        return
 
     base = _first_multi_child_level(root)
     siblings = list(base.named_children)
     if not siblings:
-        return _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
+        yield from _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
+        return
 
     groups: List[Tuple[int, int]] = _pack_siblings(contents, siblings, mapper)
     if not groups:
-        return _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
+        yield from _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
+        return
 
-    return [
-        _make_chunk(contents, s, e, path, language, repo, mapper, branch=branch)
-        for (s, e) in _stitch_full_coverage(contents, groups, mapper)
-    ]
+    for (s, e) in _stitch_full_coverage(contents, groups, mapper):
+        yield _make_chunk(contents, s, e, path, language, repo, mapper, branch=branch)
 
 
 def _stitch_full_coverage(
@@ -207,7 +206,7 @@ def _stitch_full_coverage(
 
 def _chunk_fallback(
         contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     """
     Fallback chunking without Tree-sitter:
       - Split by size with a soft step of SOFT_MAX_BYTES.
@@ -231,27 +230,30 @@ def _chunk_fallback(
 
     overlap = int(FALLBACK_OVERLAP_RATIO * SOFT_MAX_BYTES)
     ranges = _newline_aligned_ranges(contents, 0, len(contents), mapper, overlap=overlap)
-    return [_make_chunk(contents, s, e, path, language, repo, mapper, branch=branch) for s, e in ranges]
+    for s, e in ranges:
+        yield _make_chunk(contents, s, e, path, language, repo, mapper, branch=branch)
 
 
 def _chunk_document(
         contents: bytes, path: str, ext: str, repo: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
-    ctx = _build_doc_context(contents, mapper)
-    if ctx is None:
-        return _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
+) -> Iterable[Chunk]:
+    # For common structured documents, we need a DocContext (text, lines, char-to-byte map).
+    # For others, we fall back to more efficient byte-level chunking.
+    if ext in (DOC_MARKDOWN_EXTS | DOC_JSON_EXTS | DOC_YAML_EXTS | DOC_TOML_EXTS | DOC_CSV_EXTS | DOC_TSV_EXTS):
+        ctx = _build_doc_context(contents, mapper)
+        if ctx is not None:
+            if ext in DOC_MARKDOWN_EXTS:
+                yield from _chunk_markdown(ctx, contents, path, repo, "markdown", mapper, branch=branch)
+            elif ext in DOC_JSON_EXTS:
+                yield from _chunk_json(ctx, contents, path, repo, ext, mapper, branch=branch)
+            elif ext in DOC_YAML_EXTS or ext in DOC_TOML_EXTS:
+                yield from _chunk_yaml_toml(ctx, contents, path, repo, ext, mapper, branch=branch)
+            elif ext in DOC_CSV_EXTS or ext in DOC_TSV_EXTS:
+                delimiter = ',' if ext in DOC_CSV_EXTS else '\t'
+                yield from _chunk_csv(ctx, contents, path, repo, delimiter, mapper, branch=branch)
+            return
 
-    if ext in DOC_MARKDOWN_EXTS:
-        return _chunk_markdown(ctx, contents, path, repo, "markdown", mapper, branch=branch)
-    if ext in DOC_JSON_EXTS:
-        return _chunk_json(ctx, contents, path, repo, ext, mapper, branch=branch)
-    if ext in DOC_YAML_EXTS or ext in DOC_TOML_EXTS:
-        return _chunk_yaml_toml(ctx, contents, path, repo, ext, mapper, branch=branch)
-    if ext in DOC_CSV_EXTS or ext in DOC_TSV_EXTS:
-        delimiter = ',' if ext in DOC_CSV_EXTS else '\t'
-        return _chunk_csv(ctx, contents, path, repo, delimiter, mapper, branch=branch)
-
-    return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
+    yield from _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
 
 
 def _chunk_markdown(
@@ -262,10 +264,11 @@ def _chunk_markdown(
         language: str,
         mapper: LineMapper,
         branch: str | None = None,
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     blocks = _parse_markdown_blocks(ctx)
     if not blocks:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
+        yield from _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
+        return
 
     segments: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
@@ -297,7 +300,7 @@ def _chunk_markdown(
         segments.append(current)
 
     segments = _merge_small_segments(ctx, segments)
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
+    yield from _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _skip_ws(text: str, idx: int) -> int:
@@ -401,10 +404,11 @@ def _json_spans(ctx: DocContext, ext: str) -> List[Tuple[int, int, List[str]]]:
 
 def _chunk_json(
         ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     spans = _json_spans(ctx, ext)
     if not spans:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
+        yield from _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
+        return
 
     segments: List[Dict[str, Any]] = []
     for start_char, end_char, breadcrumb in spans:
@@ -419,7 +423,7 @@ def _chunk_json(
 
     segments = _merge_small_segments(ctx, segments)
     language = "jsonl" if ext in {"jsonl", "ndjson"} else "json"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
+    yield from _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _yaml_toml_heading(text: str) -> str:
@@ -444,7 +448,7 @@ def _yaml_toml_heading(text: str) -> str:
 
 def _chunk_yaml_toml(
         ctx: DocContext, contents: bytes, path: str, repo: str, ext: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     block_tag = "yaml" if ext in DOC_YAML_EXTS else "toml"
     lines = ctx.lines
     offsets = ctx.line_char_offsets
@@ -476,7 +480,8 @@ def _chunk_yaml_toml(
         i = j + 1
 
     if not blocks:
-        return _chunk_plaintext(ctx, contents, path, repo, mapper, branch=branch)
+        yield from _chunk_plaintext_bytes(contents, path, "text", repo, mapper, branch=branch)
+        return
 
     segments: List[Dict[str, Any]] = []
     for block in blocks:
@@ -492,15 +497,15 @@ def _chunk_yaml_toml(
 
     segments = _merge_small_segments(ctx, segments)
     language = "yaml" if ext in DOC_YAML_EXTS else "toml"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
+    yield from _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
 def _chunk_csv(
         ctx: DocContext, contents: bytes, path: str, repo: str, delimiter: str, mapper: LineMapper,
         branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     if not ctx.text:
-        return []
+        return
     block = DocBlock(start_char=0, end_char=len(ctx.text), type="table")
     segments: List[Dict[str, Any]] = []
     for part in _split_block_if_needed(ctx, block, mapper):
@@ -513,33 +518,17 @@ def _chunk_csv(
 
     segments = _merge_small_segments(ctx, segments)
     language = "csv" if delimiter == ',' else "tsv"
-    return _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
+    yield from _segments_to_chunks(ctx, contents, path, repo, language, segments, mapper, branch=branch)
 
 
-def _chunk_plaintext(
-        ctx: DocContext, contents: bytes, path: str, repo: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
-    if not ctx.text:
-        return []
-    block = DocBlock(start_char=0, end_char=len(ctx.text), type="text")
-    segments: List[Dict[str, Any]] = []
-    for part in _split_block_if_needed(ctx, block, mapper):
-        seg = _new_segment(part.start_char, [])
-        seg["blocks"].append(part)
-        seg["end_char"] = part.end_char
-        seg["block_types"].add("text")
-        segments.append(seg)
-
-    segments = _merge_small_segments(ctx, segments)
-    return _segments_to_chunks(ctx, contents, path, repo, "text", segments, mapper, branch=branch)
 
 
 def _chunk_plaintext_bytes(
         contents: bytes, path: str, language: str, repo: str, mapper: LineMapper, branch: str | None = None
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     total = len(contents)
     if total == 0:
-        return []
+        return
 
     # Efficient EOL detection using LineMapper
     if mapper.newlines:
@@ -554,7 +543,6 @@ def _chunk_plaintext_bytes(
         hard_cap=HARD_CAP_BYTES,
         overlap=DOC_OVERLAP_BYTES
     )
-    chunks: List[Chunk] = []
     for start, end in ranges:
         text = contents[start:end].decode("utf-8", errors="replace")
         requirement_sentences = _find_requirement_sentences(text)
@@ -571,7 +559,7 @@ def _chunk_plaintext_bytes(
             "overlap_bytes": DOC_OVERLAP_BYTES,
         }
         signature = _document_signature(repo, path, start, end, [], text[:120])
-        chunk = _make_chunk(
+        yield _make_chunk(
             contents,
             start,
             end,
@@ -583,8 +571,6 @@ def _chunk_plaintext_bytes(
             metadata=metadata,
             branch=branch,
         )
-        chunks.append(chunk)
-    return chunks
 
 
 def _new_segment(start_char: int, heading_stack: List[Tuple[int, str, str]]) -> Dict[str, Any]:
@@ -895,8 +881,7 @@ def _segments_to_chunks(
         segments: List[Dict[str, Any]],
         mapper: LineMapper,
         branch: str | None = None,
-) -> List[Chunk]:
-    chunks: List[Chunk] = []
+) -> Iterable[Chunk]:
     prev_end_bytes: Optional[int] = None
 
     for seg in segments:
@@ -980,7 +965,7 @@ def _segments_to_chunks(
             metadata["table_delimiter"] = table_delimiter
 
         signature = _document_signature(repo, path, start_bytes, end_bytes, seg["breadcrumb"], chunk_text[:120])
-        chunk = _make_chunk(
+        yield _make_chunk(
             contents,
             start_bytes,
             end_bytes,
@@ -992,10 +977,7 @@ def _segments_to_chunks(
             metadata=metadata,
             branch=branch,
         )
-        chunks.append(chunk)
         prev_end_bytes = end_bytes
-
-    return chunks
 
 
 def _document_signature(
@@ -1071,13 +1053,14 @@ def _chunk_code(
       - Emit one chunk per executable unit (methods/ctors/inits/accessors).
       - Emit one metadata chunk per top-level type (no bodies).
       - On parse failure, fall back to size-based chunking with 10% overlap.
-      Returns a single iterable (list) containing all chunks.
+      Returns a single iterable containing all chunks.
     """
     try:
         parser = get_parser(language)
         tree = parser.parse(contents)
     except Exception:
-        return list(_chunk_fallback(contents, path, language, repo, mapper, branch=branch))
+        yield from _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
+        return
 
     root = tree.root_node
     pkg = _get_package_name(contents, root, language)
@@ -1088,13 +1071,14 @@ def _chunk_code(
     inits = _query_nodes(root, language, GRAMMAR_QUERIES["Initializer"].get(language, []), "initializer")
     accessors = _query_nodes(root, language, GRAMMAR_QUERIES["Accessor"].get(language, []), "accessor")
 
-    chunks: List[Chunk] = []
-
     exec_nodes = sorted(_unique_by_span(methods + ctors + inits + accessors),
                         key=lambda n: (n.start_byte, n.end_byte))
+    
+    yielded_any = False
     for n in exec_nodes:
         for ch in _build_method_like_chunks(n, contents, path, language, repo, pkg, mapper, branch=branch):
-            chunks.append(ch)
+            yield ch
+            yielded_any = True
 
     top_level_types = [t for t in types if _is_top_level_type(t, language)]
     fields = _query_nodes(root, language, GRAMMAR_QUERIES["Field"].get(language, []), "field")
@@ -1105,29 +1089,26 @@ def _chunk_code(
                                 "record_component")
 
     for t in sorted(top_level_types, key=lambda n: (n.start_byte, n.end_byte)):
-        chunks.append(
-            _build_class_metadata_chunk(
-                t,
-                contents,
-                path,
-                language,
-                repo,
-                pkg,
-                mapper,
-                methods=exec_nodes,
-                fields=fields,
-                enums=enums,
-                anno_elems=anno_elems,
-                record_comps=record_comps,
-                branch=branch,
-            )
+        yield _build_class_metadata_chunk(
+            t,
+            contents,
+            path,
+            language,
+            repo,
+            pkg,
+            mapper,
+            methods=exec_nodes,
+            fields=fields,
+            enums=enums,
+            anno_elems=anno_elems,
+            record_comps=record_comps,
+            branch=branch,
         )
+        yielded_any = True
 
     # If Tree-sitter produced no actionable nodes, fall back to size-based chunking
-    if not chunks:
-        return list(_chunk_fallback(contents, path, language, repo, mapper, branch=branch))
-
-    return chunks
+    if not yielded_any:
+        yield from _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
 
 
 def _root_types(patterns: list[str] | None) -> set[str]:
@@ -1312,7 +1293,7 @@ def _build_method_like_chunks(
         pkg: str,
         mapper: LineMapper,
         branch: str | None = None,
-) -> List[Chunk]:
+) -> Iterable[Chunk]:
     """
     Emit 1..N chunks for a method/function/ctor/init/accessor.
 
@@ -1334,11 +1315,10 @@ def _build_method_like_chunks(
     unit_start, unit_end = doc_start, node.end_byte
     if (unit_end - unit_start) <= HARD_CAP_BYTES:
         signature = _fqn_for_node(node, contents, path, language, pkg)
-        return [
-            _make_chunk(
-                contents, unit_start, unit_end, path, language, repo, mapper, signature=signature, branch=branch
-            )
-        ]
+        yield _make_chunk(
+            contents, unit_start, unit_end, path, language, repo, mapper, signature=signature, branch=branch
+        )
+        return
 
     parts: List[Tuple[int, int]]
     if body is not None and body.named_children:
@@ -1352,24 +1332,20 @@ def _build_method_like_chunks(
         parts = _newline_aligned_ranges(contents, node.start_byte, node.end_byte, mapper)
 
     fqn = _fqn_for_node(node, contents, path, language, pkg)
-    chunks = []
     for i, (s, e) in enumerate(parts):
         start = unit_start if i == 0 else s
         end = e
-        chunks.append(
-            _make_chunk(
-                contents,
-                start,
-                end,
-                path,
-                language,
-                repo,
-                mapper,
-                signature=(f"{fqn}#part{i + 1}" if len(parts) > 1 else fqn),
-                branch=branch,
-            )
+        yield _make_chunk(
+            contents,
+            start,
+            end,
+            path,
+            language,
+            repo,
+            mapper,
+            signature=(f"{fqn}#part{i + 1}" if len(parts) > 1 else fqn),
+            branch=branch,
         )
-    return chunks
 
 
 def _build_class_metadata_chunk(

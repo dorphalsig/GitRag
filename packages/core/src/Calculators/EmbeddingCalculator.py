@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, DYNAMIC_SEQ_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,28 @@ class EmbeddingCalculator:
 
     def calculate_batch(self, chunks: list[str]) -> list[bytes]:
         assert self._model is not None
+        if DYNAMIC_SEQ_LENGTH:
+            # Dynamically adjust sequence length to save memory and compute.
+            # We take the max length in the batch, rounded to the next power of 2.
+            try:
+                # Some tokenizers use 'encode' to count tokens.
+                # We need to find the maximum tokenized length in the batch.
+                max_tokens = 0
+                for text in chunks:
+                    tokens = self._model.tokenizer.encode(text)
+                    max_tokens = max(max_tokens, len(tokens))
+                
+                # Round up and cap at native model limit (usually 1024 or from model config).
+                # SentenceTransformer models usually have 'max_seq_length'.
+                native_max = getattr(self._model, "max_seq_length", 1024)
+                new_max = min(native_max, _next_power_of_2(max_tokens))
+                
+                # Store the original so we can potentially restore it (though rarely needed).
+                old_max = getattr(self._model, "max_seq_length", native_max)
+                self._model.max_seq_length = new_max
+            except Exception as e:
+                logger.debug("Failed to dynamically adjust seq length: %r", e)
+
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,

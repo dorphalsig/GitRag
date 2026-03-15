@@ -140,11 +140,19 @@ class PersistInLibsql(PersistenceAdapter):
                 logger.warning("Embedding size mismatch for chunk %s", chunk.path)
 
         insert_stmt = text(self._upsert_sql)
+        delete_fts_stmt = text(f"DELETE FROM {self._fts_table} WHERE id = :id")
+        insert_fts_stmt = text(f"INSERT INTO {self._fts_table} (id, chunk) VALUES (:id, :chunk)")
+
+        all_params = [self._chunk_params(c) for c in valid]
+        fts_params = [{"id": p["id"], "chunk": p["chunk"]} for p in all_params]
+
         with self._engine.begin() as conn:
-            for chunk in valid:
-                params = self._chunk_params(chunk)
-                conn.execute(insert_stmt, params)
-                self._refresh_fts(conn, params["id"], chunk.chunk)
+            conn.execute(insert_stmt, all_params)
+            # Bulk FTS update: delete then re-insert to ensure synchronization.
+            # SQLite FTS5 doesn't support 'IN' with expanding parameters in all versions
+            # as efficiently, so we use a loop for delete if needed, but executemany is better.
+            conn.execute(delete_fts_stmt, [{"id": p["id"]} for p in fts_params])
+            conn.execute(insert_fts_stmt, fts_params)
 
     def delete_batch(self, paths: List[str]) -> None:
         if not paths:
@@ -236,13 +244,6 @@ class PersistInLibsql(PersistenceAdapter):
             "mutation_id=excluded.mutation_id, search_vector=excluded.search_vector, embedding=excluded.embedding"
         )
 
-    def _refresh_fts(self, conn, chunk_id: str, text_value: str) -> None:
-        delete_stmt = text(f"DELETE FROM {self._fts_table} WHERE id = :id")
-        insert_stmt = text(
-            f"INSERT INTO {self._fts_table} (id, chunk) VALUES (:id, :chunk)"
-        )
-        conn.execute(delete_stmt, {"id": chunk_id})
-        conn.execute(insert_stmt, {"id": chunk_id, "chunk": text_value})
 
     def _bootstrap(self) -> None:
         ddl = [

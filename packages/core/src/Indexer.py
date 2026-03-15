@@ -277,19 +277,19 @@ def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str]
                 return ProcessFilesResult(total, failed_paths, timed_out=True)
         logger.info("Processing %s", path)
         try:
-            chunks.extend(chunker.chunk_file(path, repo, branch=branch))
+            for chunk in chunker.chunk_file(path, repo, branch=branch):
+                chunks.append(chunk)
+                if len(chunks) >= EMBEDDING_BATCH_SIZE:
+                    batch = chunks[:EMBEDDING_BATCH_SIZE]
+                    chunks = chunks[EMBEDDING_BATCH_SIZE:]
+                    try:
+                        total += _flush_batch(batch)
+                    except Exception:
+                        logger.exception("Embed/persist failed for batch size=%d", len(batch))
+                        failed_paths.extend(c.path for c in batch)
         except Exception as e:
-            logger.error("Failed chunking %s: %s", path, e)
+            logger.error("Failed processing %s: %s", path, e)
             failed_paths.append(path)
-
-        if len(chunks) >= EMBEDDING_BATCH_SIZE:
-            batch = chunks[:EMBEDDING_BATCH_SIZE]
-            chunks = chunks[EMBEDDING_BATCH_SIZE:]
-            try:
-                total += _flush_batch(batch)
-            except Exception:
-                logger.exception("Embed/persist failed for batch size=%d", len(batch))
-                failed_paths.extend(chunk.path for chunk in batch)
 
     if chunks:
         try:

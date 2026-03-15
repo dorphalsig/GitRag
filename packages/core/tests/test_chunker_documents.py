@@ -72,7 +72,7 @@ class DocumentChunkerTests(unittest.TestCase):
             sys.modules["tree_sitter_language_pack"] = stub_lp
 
     def test_markdown_chunks_include_metadata(self) -> None:
-        chunks = self.chunker.chunk_file(str(self.markdown_fixture), repo="docs")
+        chunks = list(self.chunker.chunk_file(str(self.markdown_fixture), repo="docs"))
         self.assertTrue(chunks, "expected markdown fixture to produce chunks")
 
         grammar_version = self.chunker.DOC_GRAMMAR_VERSION
@@ -123,7 +123,7 @@ class DocumentChunkerTests(unittest.TestCase):
             handle.write(payload)
             temp_path = Path(handle.name)
         try:
-            chunks = self.chunker.chunk_file(str(temp_path), repo="docs")
+            chunks = list(self.chunker.chunk_file(str(temp_path), repo="docs"))
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -151,7 +151,7 @@ class DocumentChunkerTests(unittest.TestCase):
             handle.write(csv_content)
             temp_path = Path(handle.name)
         try:
-            chunks = self.chunker.chunk_file(str(temp_path), repo="docs")
+            chunks = list(self.chunker.chunk_file(str(temp_path), repo="docs"))
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -167,7 +167,7 @@ class DocumentChunkerTests(unittest.TestCase):
             handle.write(data)
             temp_path = Path(handle.name)
         try:
-            chunks = self.chunker.chunk_file(str(temp_path), repo="docs")
+            chunks = list(self.chunker.chunk_file(str(temp_path), repo="docs"))
         finally:
             temp_path.unlink(missing_ok=True)
 
