@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import src.Calculators.EmbeddingCalculator as calculator_module
+import Calculators.EmbeddingCalculator as calculator_module
 
 
 class FakeSentenceTransformer:
@@ -113,7 +113,7 @@ class SeqLengthTrackingSentenceTransformer:
 def test_dynamic_seq_length_adjusts_for_batch(monkeypatch):
     monkeypatch.setattr(calculator_module, "SentenceTransformer", SeqLengthTrackingSentenceTransformer)
 
-    calc = calculator_module.EmbeddingCalculator(dynamic_seq_length=True)
+    calc = calculator_module.EmbeddingCalculator()
 
     # Short chunks - should use smaller seq length
     short_chunks = ["hello", "world", "test"]

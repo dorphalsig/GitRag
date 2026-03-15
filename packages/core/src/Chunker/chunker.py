@@ -25,17 +25,13 @@ from typing import Iterable, List, Tuple, Optional, Dict, Any
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser, get_language
 
-from .Chunk import Chunk
-from .LineMapper import LineMapper
 from constants import (
     DOC_CSV_EXTS,
     DOC_GRAMMAR_VERSION,
-    DOC_HARD_CAP_BYTES,
     DOC_JSON_EXTS,
     DOC_MARKDOWN_EXTS,
     DOC_MIN_CHUNK_BYTES,
     DOC_OVERLAP_BYTES,
-    DOC_SOFT_MAX_BYTES,
     DOC_TOML_EXTS,
     DOC_TSV_EXTS,
     DOC_YAML_EXTS,
@@ -44,6 +40,8 @@ from constants import (
     NEWLINE_WINDOW,
     SOFT_MAX_BYTES,
 )
+from .Chunk import Chunk
+from .LineMapper import LineMapper
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +283,7 @@ def _chunk_markdown(
                 current = _new_segment(part.start_char, heading_stack)
             else:
                 current_size = ctx.char_to_byte[part.end_char] - ctx.char_to_byte[current["start_char"]]
-                if current["blocks"] and current_size > DOC_SOFT_MAX_BYTES:
+                if current["blocks"] and current_size > SOFT_MAX_BYTES:
                     segments.append(current)
                     current = _new_segment(part.start_char, heading_stack)
 
@@ -316,98 +314,51 @@ def _line_prefix_start(text: str, idx: int) -> int:
     return start
 
 
-def _json_object_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> List[Tuple[int, int, List[str]]]:
+def _json_container_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> List[Tuple[int, int, List[str]]]:
+    ch = text[start_idx]
+    is_object = (ch == '{')
+    end_char = '}' if is_object else ']'
+
+    try:
+        _, structure_end = decoder.raw_decode(text, start_idx)
+    except (json.JSONDecodeError, ValueError):
+        structure_end = len(text)
+
     spans: List[Tuple[int, int, List[str]]] = []
     idx = start_idx + 1
-    n = len(text)
-    structure_end = start_idx
-    while True:
-        idx = _skip_ws(text, idx)
-        if idx >= n:
-            structure_end = n
-            break
-        ch = text[idx]
-        if ch == '}':
-            structure_end = idx + 1
-            idx = structure_end
-            break
-        if ch != '"':
-            break
-        try:
-            key, key_end = json.decoder.scanstring(text, idx + 1)
-        except ValueError:
-            break
-        colon = text.find(':', key_end)
-        if colon == -1:
-            break
-        value_start = _skip_ws(text, colon + 1)
-        try:
-            _, value_end = decoder.raw_decode(text, value_start)
-        except json.JSONDecodeError:
-            break
-        entry_start = _line_prefix_start(text, idx)
-        entry_end = value_end
-        while entry_end < n and text[entry_end].isspace():
-            entry_end += 1
-        if entry_end < n and text[entry_end] == ',':
-            entry_end += 1
-        spans.append((entry_start, entry_end, [key]))
-        idx = entry_end
-
-    structure_end = _skip_ws(text, idx)
-    if structure_end < n and text[structure_end] == '}':
-        structure_end += 1
-
-    if spans:
-        first_start, first_end, first_breadcrumb = spans[0]
-        if first_start > start_idx:
-            spans[0] = (start_idx, first_end, first_breadcrumb)
-        last_start, last_end, last_breadcrumb = spans[-1]
-        if structure_end > last_end:
-            spans[-1] = (last_start, structure_end, last_breadcrumb)
-    else:
-        if structure_end <= start_idx:
-            try:
-                _, structure_end = decoder.raw_decode(text, start_idx)
-            except json.JSONDecodeError:
-                structure_end = len(text)
-        spans.append((start_idx, structure_end, []))
-
-    return spans
-
-
-def _json_array_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> List[Tuple[int, int, List[str]]]:
-    spans: List[Tuple[int, int, List[str]]] = []
-    idx = start_idx + 1
-    n = len(text)
     item_index = 0
-    structure_end = start_idx
     while True:
         idx = _skip_ws(text, idx)
-        if idx >= n:
-            structure_end = n
+        if idx >= len(text) or text[idx] == end_char:
             break
-        if text[idx] == ']':
-            structure_end = idx + 1
-            idx = structure_end
-            break
+
         entry_start = _line_prefix_start(text, idx)
         try:
-            _, value_end = decoder.raw_decode(text, idx)
-        except json.JSONDecodeError:
-            break
-        entry_end = value_end
-        while entry_end < n and text[entry_end].isspace():
-            entry_end += 1
-        if entry_end < n and text[entry_end] == ',':
-            entry_end += 1
-        spans.append((entry_start, entry_end, [f"[{item_index}]"]))
-        idx = entry_end
-        item_index += 1
+            if is_object:
+                if text[idx] != '"':
+                    break
+                key, key_end = decoder.raw_decode(text, idx)
+                colon_idx = text.find(':', key_end)
+                if colon_idx == -1:
+                    break
+                value_start = _skip_ws(text, colon_idx + 1)
+                _, value_end = decoder.raw_decode(text, value_start)
+                breadcrumb = [str(key)]
+            else:
+                _, value_end = decoder.raw_decode(text, idx)
+                breadcrumb = [f"[{item_index}]"]
+                item_index += 1
 
-    structure_end = _skip_ws(text, idx)
-    if structure_end < n and text[structure_end] == ']':
-        structure_end += 1
+            entry_end = value_end
+            while entry_end < len(text) and text[entry_end].isspace():
+                entry_end += 1
+            if entry_end < len(text) and text[entry_end] == ',':
+                entry_end += 1
+
+            spans.append((entry_start, entry_end, breadcrumb))
+            idx = entry_end
+        except (json.JSONDecodeError, ValueError):
+            break
 
     if spans:
         first_start, first_end, first_breadcrumb = spans[0]
@@ -417,11 +368,6 @@ def _json_array_spans(decoder: json.JSONDecoder, text: str, start_idx: int) -> L
         if structure_end > last_end:
             spans[-1] = (last_start, structure_end, last_breadcrumb)
     else:
-        if structure_end <= start_idx:
-            try:
-                _, structure_end = decoder.raw_decode(text, start_idx)
-            except json.JSONDecodeError:
-                structure_end = len(text)
         spans.append((start_idx, structure_end, []))
 
     return spans
@@ -444,10 +390,8 @@ def _json_spans(ctx: DocContext, ext: str) -> List[Tuple[int, int, List[str]]]:
     if idx >= len(text):
         return []
     try:
-        if text[idx] == '{':
-            return _json_object_spans(decoder, text, idx)
-        if text[idx] == '[':
-            return _json_array_spans(decoder, text, idx)
+        if text[idx] in '{[':
+            return _json_container_spans(decoder, text, idx)
         _, end_idx = decoder.raw_decode(text, idx)
         end_idx = _skip_ws(text, end_idx)
         return [(idx, end_idx, [])]
@@ -606,8 +550,8 @@ def _chunk_plaintext_bytes(
 
     ranges = _newline_aligned_ranges(
         contents, 0, total, mapper,
-        soft_max=DOC_SOFT_MAX_BYTES,
-        hard_cap=DOC_HARD_CAP_BYTES,
+        soft_max=SOFT_MAX_BYTES,
+        hard_cap=HARD_CAP_BYTES,
         overlap=DOC_OVERLAP_BYTES
     )
     chunks: List[Chunk] = []
@@ -847,7 +791,7 @@ def _split_block_if_needed(ctx: DocContext, block: DocBlock, mapper: LineMapper)
     start_bytes = ctx.char_to_byte[block.start_char]
     end_bytes = ctx.char_to_byte[block.end_char]
     total = end_bytes - start_bytes
-    if total <= DOC_HARD_CAP_BYTES or block.type == "heading":
+    if total <= HARD_CAP_BYTES or block.type == "heading":
         return [block]
 
     # Efficiently find newlines using LineMapper
@@ -863,13 +807,13 @@ def _split_block_if_needed(ctx: DocContext, block: DocBlock, mapper: LineMapper)
     cur_start_bytes = ctx.char_to_byte[cur_start]
     idx = 0
     while cur_start < block.end_char:
-        limit = cur_start_bytes + DOC_SOFT_MAX_BYTES
+        limit = cur_start_bytes + SOFT_MAX_BYTES
         chosen_char: Optional[int] = None
 
         while idx < len(newline_positions):
             candidate = newline_positions[idx]
             candidate_bytes = ctx.char_to_byte[candidate]
-            if candidate_bytes - cur_start_bytes > DOC_HARD_CAP_BYTES:
+            if candidate_bytes - cur_start_bytes > HARD_CAP_BYTES:
                 break
             chosen_char = candidate
             idx += 1
@@ -877,7 +821,7 @@ def _split_block_if_needed(ctx: DocContext, block: DocBlock, mapper: LineMapper)
                 break
 
         if chosen_char is None:
-            forced_bytes = min(cur_start_bytes + DOC_HARD_CAP_BYTES, ctx.char_to_byte[block.end_char])
+            forced_bytes = min(cur_start_bytes + HARD_CAP_BYTES, ctx.char_to_byte[block.end_char])
             forced_char = _bytes_to_char(ctx, forced_bytes)
             if forced_char <= cur_start:
                 forced_char = min(block.end_char, cur_start + 1)
@@ -1237,12 +1181,7 @@ def _is_top_level_type(n: Node, language: str) -> bool:
 
 
 from tree_sitter import Query, QueryError
-
-try:  # Tree-sitter releases prior to 0.22 omit QueryCursor
-    from tree_sitter import QueryCursor  # type: ignore
-except ImportError:  # pragma: no cover - fallback for older runtimes
-    QueryCursor = None  # type: ignore
-
+from tree_sitter import QueryCursor
 
 def _query_nodes(root: Node, language: str, sexprs: list[str], capture: str):
     """
@@ -1260,26 +1199,13 @@ def _query_nodes(root: Node, language: str, sexprs: list[str], capture: str):
         return []
 
     captures_nodes: List[Node] = []
-    if QueryCursor is not None:
-        cursor = QueryCursor()
-        cursor.exec(query, root)
-        for entry in cursor.captures():
-            if isinstance(entry, tuple):
-                node, cap_name = entry[0], entry[1] if len(entry) > 1 else None
-                if cap_name == capture:
-                    captures_nodes.append(node)
-    else:
-        captures = query.captures(root)
-        if isinstance(captures, dict):  # older python bindings return {capture: [nodes]}
-            captures_nodes.extend(captures.get(capture, []))
-        else:
-            for entry in captures:
-                if not isinstance(entry, tuple):
-                    continue
-                node = entry[0]
-                cap_name = entry[1] if len(entry) > 1 else None
-                if cap_name == capture:
-                    captures_nodes.append(node)
+    cursor = QueryCursor(query)
+    for entry in cursor.captures(root):
+        if isinstance(entry, tuple):
+            node, cap_name = entry[0], entry[1] if len(entry) > 1 else None
+            if cap_name == capture:
+                captures_nodes.append(node)
+
 
     nodes = list(captures_nodes)
 
@@ -1341,9 +1267,8 @@ def _collect_query_matches(
 ) -> List[Tuple[Node, Dict[str, Node]]]:
     """Collect grouped capture matches from a prepared query."""
     if QueryCursor is not None and hasattr(QueryCursor, "matches"):
-        cursor = QueryCursor()
-        cursor.exec(query, root)
-        raw_matches = cursor.matches()
+        cursor = QueryCursor(query)
+        raw_matches = cursor.matches(root)
     elif hasattr(query, "matches"):
         raw_matches = query.matches(root)
     else:
