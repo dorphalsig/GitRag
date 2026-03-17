@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Set, Tuple
 
+import pathspec
+
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
@@ -125,24 +127,28 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
     """
     frm, to = rng
     raw = _run_git(["diff", "--name-status", "--find-renames", "-z", f"{frm}..{to}"])
-    tokens = [t for t in raw.split("\x00") if t]
+    tokens = raw.split("\x00")
 
     to_process: Set[str] = set()
     to_delete: Set[str] = set()
     actions: List[Dict[str, str]] = []
     patterns = _get_ignore_patterns()
+    spec = pathspec.PathSpec.from_lines("gitignore", patterns) if patterns else None
 
     i = 0
     while i < len(tokens):
         status = tokens[i]
+        if not status:
+            i += 1
+            continue
 
         if status.startswith(("R", "C")):
             if i + 2 < len(tokens):
                 old_path, new_path = tokens[i + 1], tokens[i + 2]
-                if not _is_ignored(old_path, patterns):
+                if not _is_path_ignored(old_path, spec):
                     to_delete.add(old_path)
                     actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
-                if not _is_ignored(new_path, patterns):
+                if not _is_path_ignored(new_path, spec):
                     to_process.add(new_path)
                     actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
                 i += 3
@@ -151,7 +157,7 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
         else:
             if i + 1 < len(tokens):
                 path = tokens[i + 1]
-                if not _is_ignored(path, patterns):
+                if not _is_path_ignored(path, spec):
                     if status == "D":
                         to_delete.add(path)
                         actions.append({"action": "delete", "path": path, "reason": "status=D"})
@@ -189,7 +195,8 @@ def _collect_full_repo(detector: BinaryDetector) -> Tuple[Set[str], List[str], L
 
     patterns = _get_ignore_patterns()
     if patterns:
-        candidates = {p for p in candidates if not _is_ignored(p, patterns)}
+        spec = pathspec.PathSpec.from_lines("gitignore", patterns)
+        candidates = {p for p in candidates if not _is_path_ignored(p, spec)}
 
     text = _filter_text_files(candidates, detector=detector)
     skipped = sorted(candidates - text)
@@ -240,23 +247,10 @@ def _get_ignore_patterns() -> List[str]:
     return [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
 
 
-def _is_ignored(path: str, patterns: List[str]) -> bool:
-    for pat in patterns:
-        # Standardize the pattern (e.g., convert 'test/**' or 'test/' to 'test')
-        clean_pat = pat.replace("/**", "").rstrip("/")
-
-        # 1. Exact match or simple wildcard match (e.g., '*.md')
-        if fnmatch.fnmatch(path, pat):
-            return True
-
-        # 2. Match if the path is inside the ignored directory tree
-        if (
-                fnmatch.fnmatch(path, f"*/{clean_pat}/*") or  # Matches 'src/test/file.txt'
-                fnmatch.fnmatch(path, f"{clean_pat}/*")  # Matches 'test/file.txt'
-        ):
-            return True
-
-    return False
+def _is_path_ignored(path: str, spec: pathspec.PathSpec | None) -> bool:
+    if spec is None:
+        return False
+    return spec.match_file(path)
 
 
 def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter]:

@@ -7,6 +7,7 @@ import importlib
 # Ensure src is in path for imports
 sys.path.insert(0, os.path.join(os.getcwd(), 'packages', 'core', 'src'))
 Indexer = importlib.import_module("Indexer")
+import pathspec
 
 class IgnoreLogicTests(unittest.TestCase):
     @patch('os.environ.get')
@@ -23,22 +24,26 @@ class IgnoreLogicTests(unittest.TestCase):
         patterns = Indexer._get_ignore_patterns()
         self.assertEqual(patterns, [])
 
-    def test_is_ignored(self):
-        patterns = ["node_modules/*", "*.md", "dist"]
-        self.assertTrue(Indexer._is_ignored("node_modules/foo/bar.js", patterns))
-        self.assertTrue(Indexer._is_ignored("README.md", patterns))
-        self.assertTrue(Indexer._is_ignored("dist/bundle.js", patterns))
-        self.assertTrue(Indexer._is_ignored("dist", patterns))
-        self.assertFalse(Indexer._is_ignored("src/main.py", patterns))
+    def test_is_path_ignored(self):
+        patterns = ["node_modules/", "*.md", "dist/"]
+        spec = pathspec.PathSpec.from_lines("gitignore", patterns)
         
-        patterns_with_slash = ["build/"]
-        self.assertTrue(Indexer._is_ignored("build/app.exe", patterns_with_slash))
-        self.assertFalse(Indexer._is_ignored("builder.py", patterns_with_slash))
+        self.assertTrue(Indexer._is_path_ignored("node_modules/foo/bar.js", spec))
+        self.assertTrue(Indexer._is_path_ignored("README.md", spec))
+        self.assertTrue(Indexer._is_path_ignored("dist/bundle.js", spec))
+        self.assertFalse(Indexer._is_path_ignored("src/main.py", spec))
+        
+        # In .gitignore, 'dist/' matches 'dist/file' but 'dist' (without slash) matches file named 'dist' OR dir 'dist'
+        # Pathspec handles this correctly.
+        
+        spec2 = pathspec.PathSpec.from_lines("gitignore", ["build/"])
+        self.assertTrue(Indexer._is_path_ignored("build/app.exe", spec2))
+        self.assertFalse(Indexer._is_path_ignored("builder.py", spec2))
 
     @patch('Indexer._run_git')
     @patch('os.environ.get')
     def test_collect_full_repo_with_ignore(self, mock_get, mock_run_git):
-        mock_get.side_effect = lambda k, d=None: "ignored/*" if k == "GITRAG_IGNORE" else d
+        mock_get.side_effect = lambda k, d=None: "ignored/" if k == "GITRAG_IGNORE" else d
         
         def fake_run_git(args):
             if "ls-files" in args:
@@ -58,21 +63,15 @@ class IgnoreLogicTests(unittest.TestCase):
         self.assertIn("src/main.py", text)
         self.assertIn("new_file.py", text)
         self.assertNotIn("ignored/secret.txt", text)
-        
-        # Check if it's in skipped (might be useful for reporting)
-        # Actually if it's ignored via env var, it's different from being binary.
-        # But for now, let's just ensure it's not in 'text'.
 
     @patch('Indexer._run_git')
     @patch('os.environ.get')
     def test_collect_changes_with_ignore(self, mock_get, mock_run_git):
-        mock_get.side_effect = lambda k, d=None: "ignored/*" if k == "GITRAG_IGNORE" else d
+        # The user mentioned git -z format: status\0path\0
+        mock_get.side_effect = lambda k, d=None: "ignored/" if k == "GITRAG_IGNORE" else d
         
-        # Output of git diff --name-status -z
-        # Format: STATUS\tPATH1\0[PATH2\0]
-        # For M: M\tpath\0
-        # For R: R100\told\0new\0
-        mock_run_git.return_value = "M\tsrc/main.py\x00D\tignored/deleted.txt\x00A\tignored/new.txt\x00R100\told.txt\x00ignored/renamed.txt\x00"
+        # M\0path\0D\0path\0R100\0old\0new\0
+        mock_run_git.return_value = "M\x00src/main.py\x00D\x00ignored/deleted.txt\x00A\x00ignored/new.txt\x00R100\x00old.txt\x00ignored/renamed.txt\x00"
         
         to_proc, to_del, actions = Indexer._collect_changes(("HEAD^", "HEAD"))
         
@@ -82,8 +81,6 @@ class IgnoreLogicTests(unittest.TestCase):
         self.assertNotIn("ignored/deleted.txt", to_del)
         
         # old.txt was renamed to ignored/renamed.txt. 
-        # If we ignore renamed.txt, should we still delete old.txt?
-        # Probably yes, because it's no longer there.
         self.assertIn("old.txt", to_del)
 
 if __name__ == "__main__":
