@@ -26,6 +26,10 @@ Recommended for existing database clusters.
 * `DB_PROVIDER`: `postgres`
 * `DATABASE_URL`: Your connection string (e.g., `postgresql://user:pass@host:5432/db`).
 
+### 3. Exclusions
+To exclude certain files or directories from indexing,
+* `GITRAG_IGNORE`: A comma- or semicolon- separated list of glob patterns that will not be indexed.
+
 ## 📦 Deployment
 
 ### GitHub Action (The Indexer)

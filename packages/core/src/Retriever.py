@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, List, Optional, Protocol, Sequence
 
+import numpy as np
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker.Chunk import Chunk
 from Persistence.Persist import PersistenceAdapter
@@ -111,10 +112,16 @@ class Qwen3Reranker:
             )
             for candidate in candidates
         ]
-        encoded = tokenizer(pairs, padding=True, truncation=True, return_tensors="pt")
+        encoded = tokenizer(
+            pairs,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
         import torch
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = model(**encoded)
         logits = getattr(outputs, "logits", None)
         if logits is None:
@@ -160,17 +167,15 @@ class Retriever:
 
         scores = self.reranker.score(normalized_query, candidates)
         if len(scores) != len(candidates):
-            raise ValueError("Reranker returned mismatched score length")
+            raise ValueError(f"Reranker returned mismatched score length: {len(scores)} vs {len(candidates)}")
         ranked = sorted(zip(scores, candidates), key=lambda item: item[0], reverse=True)
         return [chunk for _, chunk in ranked[:top_k]]
 
-    def _calculate_query_embedding(self, query: str) -> List[float]:
+    def _calculate_query_embedding(self, query: str) -> np.ndarray:
         raw = self.embedding_calculator.calculate(query)
         if isinstance(raw, (bytearray, memoryview)):
             raw = bytes(raw)
         if not isinstance(raw, bytes):
-            raise TypeError("EmbeddingCalculator.calculate must return bytes")
+            raise TypeError(f"EmbeddingCalculator.calculate must return bytes, got {type(raw)}")
 
-        vals = array("f")
-        vals.frombytes(raw)
-        return list(vals)
+        return np.frombuffer(raw, dtype=np.float32)

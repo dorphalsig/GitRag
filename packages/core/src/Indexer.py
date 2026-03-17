@@ -14,6 +14,7 @@ Indexer.py — lean orchestrator
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import logging
 import os
@@ -129,6 +130,7 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
     to_process: Set[str] = set()
     to_delete: Set[str] = set()
     actions: List[Dict[str, str]] = []
+    patterns = _get_ignore_patterns()
 
     i = 0
     while i < len(tokens):
@@ -145,22 +147,25 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
         if status.startswith(("R", "C")):
             if i + 1 < len(tokens):
                 old_path, new_path = path1, tokens[i + 1]
-                to_delete.add(old_path)
-                to_process.add(new_path)
-                actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
-                actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
+                if not _is_ignored(old_path, patterns):
+                    to_delete.add(old_path)
+                    actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
+                if not _is_ignored(new_path, patterns):
+                    to_process.add(new_path)
+                    actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
                 i += 2
             else:
                 logger.debug("Rename/copy record missing new path: %r", rec)
                 i += 1
             continue
 
-        if status == "D":
-            to_delete.add(path1)
-            actions.append({"action": "delete", "path": path1, "reason": "status=D"})
-        else:
-            to_process.add(path1)
-            actions.append({"action": "process", "path": path1, "reason": f"status={status}"})
+        if not _is_ignored(path1, patterns):
+            if status == "D":
+                to_delete.add(path1)
+                actions.append({"action": "delete", "path": path1, "reason": "status=D"})
+            else:
+                to_process.add(path1)
+                actions.append({"action": "process", "path": path1, "reason": f"status={status}"})
         i += 1
 
     return to_process, to_delete, actions
@@ -187,6 +192,11 @@ def _collect_full_repo(detector: BinaryDetector) -> Tuple[Set[str], List[str], L
     tracked = _list_paths(["ls-files", "--cached"])
     others = _list_paths(["ls-files", "--others", "--exclude-standard"])
     candidates = tracked | others
+
+    patterns = _get_ignore_patterns()
+    if patterns:
+        candidates = {p for p in candidates if not _is_ignored(p, patterns)}
+
     text = _filter_text_files(candidates, detector=detector)
     skipped = sorted(candidates - text)
     actions = [{"action": "process", "path": p, "reason": "full-index"} for p in sorted(text)]
@@ -228,6 +238,28 @@ def _env_value(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
+def _get_ignore_patterns() -> List[str]:
+    val = _env_value("GITRAG_IGNORE")
+    if not val:
+        return []
+    # Split by comma or semicolon
+    return [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
+
+
+def _is_ignored(path: str, patterns: List[str]) -> bool:
+    for pat in patterns:
+        if fnmatch.fnmatch(path, pat):
+            return True
+        # If it's a directory-style ignore, it might be that pat is just the directory name.
+        if not pat.endswith(("*", "/")):
+            if fnmatch.fnmatch(path, pat + "/*"):
+                return True
+        elif pat.endswith("/"):
+            if fnmatch.fnmatch(path, pat + "*"):
+                return True
+    return False
+
+
 def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter]:
     """Initialize the embedding calculator and persistence layer.
 
@@ -261,13 +293,20 @@ def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str]
     chunks: list[Chunk] = []
 
     def _flush_batch(batch: list[Chunk]) -> int:
+        if not batch:
+            return 0
         logger.info("Calculating embeddings for %d chunks", len(batch))
         text = [chunk.chunk for chunk in batch]
-        embeddings = calc.calculate_batch(text)
-        for chunk, emb in zip(batch, embeddings):
-            object.__setattr__(chunk, "embeddings", emb)
-        persist.persist_batch(batch)
-        return len(embeddings)
+        try:
+            embeddings = calc.calculate_batch(text)
+            for chunk, emb in zip(batch, embeddings):
+                object.__setattr__(chunk, "embeddings", emb)
+            persist.persist_batch(batch)
+            return len(embeddings)
+        except Exception:
+            logger.exception("Embed/persist failed for batch size=%d", len(batch))
+            failed_paths.extend(c.path for c in batch)
+            return 0
 
     for path in path_list:
         # Check soft timeout before processing each file
@@ -280,23 +319,15 @@ def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str]
             for chunk in chunker.chunk_file(path, repo, branch=branch):
                 chunks.append(chunk)
                 if len(chunks) >= EMBEDDING_BATCH_SIZE:
-                    batch = chunks[:EMBEDDING_BATCH_SIZE]
-                    chunks = chunks[EMBEDDING_BATCH_SIZE:]
-                    try:
-                        total += _flush_batch(batch)
-                    except Exception:
-                        logger.exception("Embed/persist failed for batch size=%d", len(batch))
-                        failed_paths.extend(c.path for c in batch)
+                    batch = chunks
+                    chunks = []
+                    total += _flush_batch(batch)
         except Exception as e:
             logger.error("Failed processing %s: %s", path, e)
             failed_paths.append(path)
 
     if chunks:
-        try:
-            total += _flush_batch(chunks)
-        except Exception:
-            logger.exception("Embed/persist failed for final batch size=%d", len(chunks))
-            failed_paths.extend(chunk.path for chunk in chunks)
+        total += _flush_batch(chunks)
 
     return ProcessFilesResult(total, failed_paths)
 

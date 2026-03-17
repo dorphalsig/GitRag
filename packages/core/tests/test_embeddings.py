@@ -101,6 +101,11 @@ class SeqLengthTrackingSentenceTransformer:
         class MockTokenizer:
             def encode(self, text):
                 return [0] * (len(text) // 4 + 1)
+            
+            def __call__(self, texts, **kwargs):
+                if isinstance(texts, str):
+                    return {"input_ids": [self.encode(texts)]}
+                return {"input_ids": [self.encode(t) for t in texts]}
         self.tokenizer = MockTokenizer()
 
     def encode(self, texts, normalize_embeddings=True, batch_size=None, show_progress_bar=False):

@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -40,12 +41,16 @@ class EmbeddingCalculator:
             # Attempt ONNX if on CPU
             if self._device == "cpu" or self._device is None:
                 try:
-                    self._model = SentenceTransformer(
-                        EMBEDDING_MODEL_ID,
-                        trust_remote_code=True,
-                        device="cpu",
-                        backend="onnx"
-                    )
+                    kwargs = {
+                        "model_id_or_path": EMBEDDING_MODEL_ID,
+                        "trust_remote_code": True,
+                        "device": "cpu",
+                        "backend": "onnx",
+                    }
+                    if os.path.exists(os.path.join(EMBEDDING_MODEL_ID, "model_optimized.onnx")):
+                        kwargs["model_kwargs"] = {"file_name": "model_optimized.onnx"}
+
+                    self._model = SentenceTransformer(**kwargs)
                     logger.info("Loaded embedding model with ONNX backend")
                 except Exception as e:
                     logger.warning("Failed to load model with ONNX backend, falling back to PyTorch: %r", e)
@@ -85,22 +90,26 @@ class EmbeddingCalculator:
         assert self._model is not None
         if DYNAMIC_SEQ_LENGTH:
             # Dynamically adjust sequence length to save memory and compute.
-            # We take the max length in the batch, rounded to the next power of 2.
             try:
-                # Some tokenizers use 'encode' to count tokens.
-                # We need to find the maximum tokenized length in the batch.
+                # Use tokenizer to get token counts without full encoding if possible,
+                # but sentence-transformers usually requires full encoding to get lengths accurately.
+                # However, we can use 'encode' with add_special_tokens=True.
                 max_tokens = 0
-                for text in chunks:
-                    tokens = self._model.tokenizer.encode(text)
-                    max_tokens = max(max_tokens, len(tokens))
+                token_results = self._model.tokenizer(
+                    chunks, 
+                    padding=False, 
+                    truncation=False, 
+                    add_special_tokens=True,
+                    return_attention_mask=False,
+                    return_token_type_ids=False
+                )
+                for ids in token_results["input_ids"]:
+                    max_tokens = max(max_tokens, len(ids))
                 
-                # Round up and cap at native model limit (usually 1024 or from model config).
-                # SentenceTransformer models usually have 'max_seq_length'.
+                # Round up and cap at native model limit.
                 native_max = getattr(self._model, "max_seq_length", 1024)
                 new_max = min(native_max, _next_power_of_2(max_tokens))
                 
-                # Store the original so we can potentially restore it (though rarely needed).
-                old_max = getattr(self._model, "max_seq_length", native_max)
                 self._model.max_seq_length = new_max
             except Exception as e:
                 logger.debug("Failed to dynamically adjust seq length: %r", e)

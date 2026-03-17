@@ -41,7 +41,7 @@ class PersistenceAdapter(Protocol):
 
     def search(
         self,
-        query_embedding: List[float],
+        query_embedding: Any,
         query_text: str,
         limit: int = 10,
         repo: str | None = None,
@@ -183,7 +183,7 @@ class PersistInLibsql(PersistenceAdapter):
 
     def search(
         self,
-        query_embedding: List[float],
+        query_embedding: Any,
         query_text: str,
         limit: int = 10,
         repo: str | None = None,
@@ -200,10 +200,34 @@ class PersistInLibsql(PersistenceAdapter):
         if not keyword_rows:
             return []
 
-        scored = []
+        # Optimization: calculate vector similarities in batch using numpy
+        query_vec = np.asarray(query_embedding, dtype=np.float32).reshape(-1)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm > 1e-9:
+            query_vec = query_vec / query_norm
+
+        candidate_embeddings = []
         for row in keyword_rows:
-            keyword_score = float(row.get("keyword_score") or 0.0)
-            vector_score = self._vector_similarity(query_embedding, row.get("embedding"))
+            raw = row.get("embedding")
+            if raw is not None:
+                vec = np.frombuffer(bytes(raw), dtype=np.float32)
+                candidate_embeddings.append(vec)
+            else:
+                candidate_embeddings.append(np.zeros_like(query_vec))
+        
+        matrix = np.stack(candidate_embeddings)
+        row_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        # Avoid division by zero
+        matrix_normalized = matrix / np.where(row_norms > 1e-9, row_norms, 1.0)
+        
+        vector_scores = np.dot(matrix_normalized, query_vec)
+
+        scored = []
+        for i, row in enumerate(keyword_rows):
+            # SQLite bm25() returns negative values where smaller (more negative) is better.
+            # We negate it so that larger positive values indicate better matches for hybrid scoring.
+            keyword_score = -float(row.get("keyword_score") or 0.0)
+            vector_score = float(vector_scores[i])
             hybrid_score = (vector_score * HYBRID_SEARCH_VECTOR_WEIGHT) + (keyword_score * HYBRID_SEARCH_KEYWORD_WEIGHT)
             scored.append((hybrid_score, row))
 
@@ -353,23 +377,6 @@ class PersistInLibsql(PersistenceAdapter):
             rows = conn.execute(fallback_sql, {**params, "term": term}).mappings().all()
         return [dict(row) for row in rows]
 
-    @staticmethod
-    def _vector_similarity(query_embedding: List[float], raw_embedding: Any) -> float:
-        if not query_embedding or raw_embedding is None:
-            return 0.0
-        vals = array("f")
-        vals.frombytes(bytes(raw_embedding))
-        if not vals:
-            return 0.0
-        q = query_embedding[: len(vals)]
-        if not q:
-            return 0.0
-        dot = float(np.dot(q, vals))
-        q_norm = math.sqrt(sum(a * a for a in q))
-        v_norm = math.sqrt(sum(b * b for b in vals[: len(q)]))
-        if q_norm == 0 or v_norm == 0:
-            return 0.0
-        return dot / (q_norm * v_norm)
 
     @staticmethod
     def _row_to_chunk(row: Dict[str, Any]) -> Chunk:

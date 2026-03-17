@@ -5,6 +5,7 @@ from array import array
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+import numpy as np
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
@@ -142,7 +143,7 @@ class PersistInPostgres(PersistenceAdapter):
 
     def search(
         self,
-        query_embedding: List[float],
+        query_embedding: Any,
         query_text: str,
         limit: int = 10,
         repo: str | None = None,
@@ -198,12 +199,10 @@ class PersistInPostgres(PersistenceAdapter):
             rows = conn.execute(sql).fetchall()
         return {row[0] for row in rows}
 
-    def _decode_embedding(self, raw: bytes) -> List[float]:
+    def _decode_embedding(self, raw: bytes) -> np.ndarray:
         if len(raw) != self._dim * 4:
             raise ValueError(f"Embedding size mismatch: expected {self._dim * 4} bytes, got {len(raw)}")
-        vals = array("f")
-        vals.frombytes(raw)
-        return list(vals)
+        return np.frombuffer(raw, dtype=np.float32)
 
     def _row_to_chunk(self, row: Dict[str, Any]) -> Chunk:
         text_value = row.get("chunk") or ""
