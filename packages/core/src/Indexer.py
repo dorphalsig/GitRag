@@ -134,39 +134,33 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
 
     i = 0
     while i < len(tokens):
-        rec = tokens[i]
-        tab = rec.find("\t")
-        if tab < 0:
-            logger.debug("Skipping malformed name-status record (no tab): %r", rec)
-            i += 1
-            continue
-
-        status = rec[:tab]
-        path1 = rec[tab + 1:]
+        status = tokens[i]
 
         if status.startswith(("R", "C")):
-            if i + 1 < len(tokens):
-                old_path, new_path = path1, tokens[i + 1]
+            if i + 2 < len(tokens):
+                old_path, new_path = tokens[i + 1], tokens[i + 2]
                 if not _is_ignored(old_path, patterns):
                     to_delete.add(old_path)
                     actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
                 if not _is_ignored(new_path, patterns):
                     to_process.add(new_path)
                     actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
+                i += 3
+            else:
+                i += 1
+        else:
+            if i + 1 < len(tokens):
+                path = tokens[i + 1]
+                if not _is_ignored(path, patterns):
+                    if status == "D":
+                        to_delete.add(path)
+                        actions.append({"action": "delete", "path": path, "reason": "status=D"})
+                    else:
+                        to_process.add(path)
+                        actions.append({"action": "process", "path": path, "reason": f"status={status}"})
                 i += 2
             else:
-                logger.debug("Rename/copy record missing new path: %r", rec)
                 i += 1
-            continue
-
-        if not _is_ignored(path1, patterns):
-            if status == "D":
-                to_delete.add(path1)
-                actions.append({"action": "delete", "path": path1, "reason": "status=D"})
-            else:
-                to_process.add(path1)
-                actions.append({"action": "process", "path": path1, "reason": f"status={status}"})
-        i += 1
 
     return to_process, to_delete, actions
 
@@ -248,15 +242,20 @@ def _get_ignore_patterns() -> List[str]:
 
 def _is_ignored(path: str, patterns: List[str]) -> bool:
     for pat in patterns:
+        # Standardize the pattern (e.g., convert 'test/**' or 'test/' to 'test')
+        clean_pat = pat.replace("/**", "").rstrip("/")
+
+        # 1. Exact match or simple wildcard match (e.g., '*.md')
         if fnmatch.fnmatch(path, pat):
             return True
-        # If it's a directory-style ignore, it might be that pat is just the directory name.
-        if not pat.endswith(("*", "/")):
-            if fnmatch.fnmatch(path, pat + "/*"):
-                return True
-        elif pat.endswith("/"):
-            if fnmatch.fnmatch(path, pat + "*"):
-                return True
+
+        # 2. Match if the path is inside the ignored directory tree
+        if (
+                fnmatch.fnmatch(path, f"*/{clean_pat}/*") or  # Matches 'src/test/file.txt'
+                fnmatch.fnmatch(path, f"{clean_pat}/*")  # Matches 'test/file.txt'
+        ):
+            return True
+
     return False
 
 
