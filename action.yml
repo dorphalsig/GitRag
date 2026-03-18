@@ -25,9 +25,16 @@ inputs:
     description: "Soft timeout in seconds. Indexer exits with code 75 when exceeded, enabling workflow retry."
     required: false
     default: "0"
-
+outputs:
+  exit_code:
+    description: "The numeric exit code of the indexer script"
+    value: ${{ steps.run-indexer.outputs.exit_code }}
+  stdout:
+    description: "The console output (stdout/stderr) of the indexer script"
+    value: ${{ steps.run-indexer.outputs.stdout }}
 runs:
   using: "composite"
+  id: run-indexer
   steps:
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -46,6 +53,7 @@ runs:
         PYTHONPATH: ${{ github.action_path }}/packages/core/src
         SOFT_TIMEOUT: ${{ inputs.soft_timeout }}
       run: |
+        set +e
         ARGS=""
         [ "${{ inputs.full_index }}" = "true" ] && ARGS="--full"
         [ -n "${{ inputs.branch }}" ] && ARGS="$ARGS --branch ${{ inputs.branch }}"
@@ -57,4 +65,17 @@ runs:
             ARGS="$ARGS --from-sha $BEFORE --to-sha ${{ github.sha }}"
           fi
         fi
-        python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS
+        OUTPUT=$(python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS 2>&1)
+        EXIT_CODE=$?
+        
+        # Write to GITHUB_OUTPUT using a safe multiline delimiter
+        DELIMITER=$(openssl rand -hex 8)
+        
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "stdout<<$DELIMITER" >> "$GITHUB_OUTPUT"
+        echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+        echo "$DELIMITER" >> "$GITHUB_OUTPUT"
+        
+        set -e
+        # Explicitly fail the composite step if the Python script failed
+        exit $EXIT_CODE        

@@ -311,14 +311,15 @@ def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str]
             return 0
 
     for path in path_list:
-        # Check soft timeout before processing each file
-        if start_time is not None and SOFT_TIMEOUT_SECONDS > 0:
-            elapsed = time.time() - start_time
-            if elapsed >= SOFT_TIMEOUT_SECONDS:
-                return ProcessFilesResult(total, failed_paths, timed_out=True)
         logger.info("Processing %s", path)
         try:
             for chunk in chunker.chunk_file(path, repo, branch=branch):
+                # Check soft timeout before processing each file
+                if start_time is not None and SOFT_TIMEOUT_SECONDS > 0:
+                    elapsed = time.time() - start_time
+                    if elapsed >= SOFT_TIMEOUT_SECONDS:
+                        return ProcessFilesResult(total, failed_paths, timed_out=True)
+
                 chunks.append(chunk)
                 if len(chunks) >= EMBEDDING_BATCH_SIZE:
                     batch = chunks
