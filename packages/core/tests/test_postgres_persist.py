@@ -4,6 +4,8 @@ from array import array
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -69,7 +71,7 @@ class PostgresPersistTests(unittest.TestCase):
         self.assertIn("ON CONFLICT(id) DO UPDATE", sql)
         self.assertEqual(params["path"], "p.py")
         self.assertEqual(len(params["embedding"]), 1024)
-        self.assertIsInstance(params["embedding"][0], float)
+        self.assertIsInstance(params["embedding"][0], (float, np.float32))
 
     def test_delete_batch_uses_path_expanding_parameter(self):
         engine, conn = self._fake_engine()

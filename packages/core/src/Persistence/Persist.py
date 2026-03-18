@@ -221,18 +221,47 @@ class PersistInLibsql(PersistenceAdapter):
         matrix_normalized = matrix / np.where(row_norms > 1e-9, row_norms, 1.0)
         
         vector_scores = np.dot(matrix_normalized, query_vec)
-
+        
+        # Hybrid scoring using Reciprocal Rank Fusion (RRF) for robustness
+        # across different score scales (BM25 vs Cosine Similarity).
+        
+        # 1. Rank by vector score
+        vector_ranked = sorted(range(len(keyword_rows)), key=lambda i: vector_scores[i], reverse=True)
+        vector_ranks = {idx: rank for rank, idx in enumerate(vector_ranked)}
+        
+        # 2. Rank by keyword score (they are already sorted by SQLite, but let's be explicit)
+        keyword_ranked = sorted(range(len(keyword_rows)), key=lambda i: float(keyword_rows[i].get("keyword_score") or 0.0), reverse=True)
+        keyword_ranks = {idx: rank for rank, idx in enumerate(keyword_ranked)}
+        
+        rrf_k = 60 # Standard constant for RRF
         scored = []
         for i, row in enumerate(keyword_rows):
-            # SQLite bm25() returns negative values where smaller (more negative) is better.
-            # We negate it so that larger positive values indicate better matches for hybrid scoring.
-            keyword_score = -float(row.get("keyword_score") or 0.0)
-            vector_score = float(vector_scores[i])
-            hybrid_score = (vector_score * HYBRID_SEARCH_VECTOR_WEIGHT) + (keyword_score * HYBRID_SEARCH_KEYWORD_WEIGHT)
-            scored.append((hybrid_score, row))
+            v_rank = vector_ranks[i]
+            k_rank = keyword_ranks[i]
+            
+            # RRF score formula
+            rrf_score = (1.0 / (rrf_k + v_rank)) + (1.0 / (rrf_k + k_rank))
+            scored.append((rrf_score, row))
 
         scored.sort(key=lambda item: item[0], reverse=True)
         return [self._row_to_chunk(row) for _, row in scored[:normalized_limit]]
+
+    @staticmethod
+    def _vector_similarity(v1: Sequence[float], v2_bytes: bytes | None) -> float:
+        if not v2_bytes or not v1:
+            return 0.0
+        try:
+            arr1 = np.asarray(v1, dtype=np.float32)
+            arr2 = np.frombuffer(v2_bytes, dtype=np.float32)
+            if arr1.shape != arr2.shape:
+                return 0.0
+            norm1 = np.linalg.norm(arr1)
+            norm2 = np.linalg.norm(arr2)
+            if norm1 < 1e-9 or norm2 < 1e-9:
+                return 0.0
+            return float(np.dot(arr1, arr2) / (norm1 * norm2))
+        except Exception:
+            return 0.0
 
     def _chunk_params(self, chunk: Chunk) -> Dict[str, Any]:
         start_row, start_col = chunk.start_rc

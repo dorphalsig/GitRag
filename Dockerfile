@@ -50,7 +50,7 @@ if __name__ == "__main__":\n\
 \n\
     # 2. Imports (Delayed until after config check to speed up failure)\n\
     try:\n\
-        from Persistence.Persist import Persist as PersistInLibsql\n\
+        from Persistence.Persist import PersistInLibsql, LibsqlConfig\n\
         from Retriever import Retriever, Qwen3Reranker\n\
         from Calculators.EmbeddingCalculator import EmbeddingCalculator\n\
         from gitrag_mcp_server.server import create_mcp_server\n\
@@ -65,7 +65,8 @@ if __name__ == "__main__":\n\
     calculator = EmbeddingCalculator()\n\
     \n\
     print("Connecting to LibSQL...")\n\
-    persistence = PersistInLibsql(db_url, db_token)\n\
+    cfg = LibsqlConfig.from_parts(database_url=db_url, auth_token=db_token)\n\
+    persistence = PersistInLibsql(cfg=cfg)\n\
     \n\
     print("Loading Reranker (Qwen3-0.6B)...")\n\
     reranker = Qwen3Reranker()\n\

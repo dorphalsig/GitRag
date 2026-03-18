@@ -11,10 +11,10 @@ EXIT_CODE_TIMEOUT = 75
 # Retriever constants
 RETRIEVAL_QUERY_PREFIX = os.getenv("retrieval_prefix", "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:")
 DEFAULT_RERANKER_MODEL = os.getenv("reranker","jinaai/jina-reranker-v3")
-DEFAULT_RERANK_TASK_INSTRUCTION = os.getenv("rerank_instruction","")
+DEFAULT_RERANK_TASK_INSTRUCTION = os.getenv("rerank_instruction","Given a search query, find the most relevant passages from the repository")
 DEFAULT_ATTN_IMPLEMENTATION = "sdpa"
 DEFAULT_TOP_K = int(os.getenv("topk", 10))
-DEFAULT_INITIAL_RETRIEVAL_LIMIT = DEFAULT_TOP_K*5
+DEFAULT_INITIAL_RETRIEVAL_LIMIT = DEFAULT_TOP_K * 10
 
 # Persistence constants
 DEFAULT_TABLE_NAME = "chunks"

@@ -103,7 +103,7 @@ def test_main_threads_branch_argument_end_to_end(monkeypatch) -> None:
 
 
 def test_collect_changes_handles_rename_delete_and_modify(monkeypatch) -> None:
-    payload = "R100\told.py\x00new.py\x00D\tgone.py\x00M\tkeep.py\x00"
+    payload = "R100\x00old.py\x00new.py\x00D\x00gone.py\x00M\x00keep.py\x00"
     monkeypatch.setattr(Indexer, "_run_git", lambda args: payload)
 
     to_process, to_delete, actions = Indexer._collect_changes(("a", "b"))

@@ -139,9 +139,10 @@ def test_postgres_search_executes_hybrid_query_and_maps_chunks() -> None:
     assert len(results) == 1
     assert results[0].path == "x.py"
     called_sql = str(connect_ctx.__enter__.return_value.execute.call_args.args[0])
-    assert "hybrid_rank" in called_sql
+    assert "vector_candidates" in called_sql
+    assert "keyword_candidates" in called_sql
     params = connect_ctx.__enter__.return_value.execute.call_args.args[1]
-    assert params["limit"] == 3
+    assert params["final_limit"] == 3
     assert params["query_text"] == "keyword"
 
 
@@ -228,7 +229,7 @@ def test_libsql_search_preserves_fractional_keyword_scores() -> None:
             "end_col": 3,
             "start_bytes": 0,
             "end_bytes": 3,
-            "embedding": array("f", [1.0, 0.0]).tobytes(),
+            "embedding": array("f", [0.0, 1.0]).tobytes(),
             "keyword_score": 0.1,
         },
         {

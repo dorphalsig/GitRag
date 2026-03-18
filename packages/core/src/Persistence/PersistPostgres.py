@@ -151,47 +151,91 @@ class PersistInPostgres(PersistenceAdapter):
         branch: str | None = None,
     ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
-        filters = [f":query_text = '' OR search_vector @@ websearch_to_tsquery('{POSTGRES_FTS_LANGUAGE}', :query_text)"]
+        query = (query_text or "").strip()
+        
+        # We use a CTE approach for true hybrid search: 
+        # 1. Fetch top candidates by vector similarity.
+        # 2. Fetch top candidates by keyword (FTS).
+        # 3. Combine and rerank them using the hybrid scoring formula.
+        
+        common_filters = []
         params: Dict[str, Any] = {
-            "query_text": (query_text or "").strip(),
             "query_embedding": query_embedding,
-            "limit": normalized_limit,
-        }
-        if repo is not None:
-            filters.append("repo = :repo")
-            params["repo"] = repo
-        if branch is not None:
-            filters.append("branch = :branch")
-            params["branch"] = branch
-
-        where_clause = " AND ".join(f"({flt})" for flt in filters)
-        sql = text(
-            f"""
-            SELECT
-                id,
-                path,
-                repo,
-                branch,
-                chunk,
-                embedding,
-                ts_rank_cd(search_vector, websearch_to_tsquery(:fts_lang, :query_text)) AS keyword_rank,
-                1 - (embedding <=> :query_embedding) AS vector_rank,
-                ((1 - (embedding <=> :query_embedding)) * :vector_weight +
-                 ts_rank_cd(search_vector, websearch_to_tsquery(:fts_lang, :query_text)) * :keyword_weight) AS hybrid_rank
-            FROM {self._table}
-            WHERE {where_clause}
-            ORDER BY hybrid_rank DESC
-            LIMIT :limit
-            """
-        ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
-        params.update({
+            "query_text": query,
             "fts_lang": POSTGRES_FTS_LANGUAGE,
+            "candidate_limit": normalized_limit * 5,
+            "final_limit": normalized_limit,
             "vector_weight": HYBRID_SEARCH_VECTOR_WEIGHT,
             "keyword_weight": HYBRID_SEARCH_KEYWORD_WEIGHT,
-        })
+        }
+        
+        if repo is not None:
+            common_filters.append("repo = :repo")
+            params["repo"] = repo
+        if branch is not None:
+            common_filters.append("branch = :branch")
+            params["branch"] = branch
+            
+        where_clause = (" WHERE " + " AND ".join(common_filters)) if common_filters else ""
+        
+        sql = text(
+            f"""
+            WITH vector_candidates AS (
+                SELECT id, 1 - (embedding <=> :query_embedding) AS v_score
+                FROM {self._table}
+                {where_clause}
+                ORDER BY embedding <=> :query_embedding
+                LIMIT :candidate_limit
+            ),
+            keyword_candidates AS (
+                SELECT id, ts_rank_cd(search_vector, websearch_to_tsquery(:fts_lang, :query_text)) AS k_score
+                FROM {self._table}
+                {where_clause} AND search_vector @@ websearch_to_tsquery(:fts_lang, :query_text)
+                ORDER BY k_score DESC
+                LIMIT :candidate_limit
+            ),
+            combined_ids AS (
+                SELECT id FROM vector_candidates
+                UNION
+                SELECT id FROM keyword_candidates
+            )
+            SELECT 
+                c.id, c.path, c.repo, c.branch, c.chunk, c.embedding, c.language,
+                c.start_row, c.start_col, c.end_row, c.end_col, c.start_bytes, c.end_bytes,
+                COALESCE(vc.v_score, 1 - (c.embedding <=> :query_embedding)) AS vector_rank,
+                COALESCE(kc.k_score, ts_rank_cd(c.search_vector, websearch_to_tsquery(:fts_lang, :query_text))) AS keyword_rank
+            FROM combined_ids ci
+            JOIN {self._table} c ON c.id = ci.id
+            LEFT JOIN vector_candidates vc ON vc.id = ci.id
+            LEFT JOIN keyword_candidates kc ON kc.id = ci.id
+            ORDER BY (
+                COALESCE(vc.v_score, 1 - (c.embedding <=> :query_embedding)) * :vector_weight +
+                COALESCE(kc.k_score, ts_rank_cd(c.search_vector, websearch_to_tsquery(:fts_lang, :query_text))) * :keyword_weight
+            ) DESC
+            LIMIT :final_limit
+            """
+        ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
 
         with self._engine.connect() as conn:
-            rows = conn.execute(sql, params).mappings().all()
+            # Handle empty query text for FTS (it would fail websearch_to_tsquery)
+            if not query:
+                # Vector-only fallback if no query text
+                fallback_sql = text(
+                    f"""
+                    SELECT id, path, repo, branch, chunk, embedding, language,
+                           start_row, start_col, end_row, end_col, start_bytes, end_bytes,
+                           1 - (embedding <=> :query_embedding) AS vector_rank,
+                           0.0 AS keyword_rank
+                    FROM {self._table}
+                    {where_clause}
+                    ORDER BY embedding <=> :query_embedding
+                    LIMIT :final_limit
+                    """
+                ).bindparams(bindparam("query_embedding", type_=Vector(self._dim)))
+                rows = conn.execute(fallback_sql, params).mappings().all()
+            else:
+                rows = conn.execute(sql, params).mappings().all()
+                
         return [self._row_to_chunk(dict(row)) for row in rows]
 
     def get_indexed_paths(self) -> set[str]:
