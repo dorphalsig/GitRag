@@ -2,7 +2,7 @@
 import os
 
 # Embedding constants
-EMBEDDING_MODEL_ID = os.getenv("model", "Qwen/Qwen3-Embedding-0.6B")
+EMBEDDING_MODEL_ID = os.getenv("MODEL", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_DIMENSIONS = int(os.getenv("DIMENSIONS", 1_024))
 EMBEDDING_BATCH_SIZE = int(os.getenv("BATCH_SIZE", 64))
 SOFT_TIMEOUT_SECONDS = int(os.getenv("SOFT_TIMEOUT", 0))
