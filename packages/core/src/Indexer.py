@@ -14,7 +14,6 @@ Indexer.py — lean orchestrator
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import logging
 import os
@@ -30,9 +29,19 @@ from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
 from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
-from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE, SOFT_TIMEOUT_SECONDS, EXIT_CODE_TIMEOUT
+from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE, SOFT_TIMEOUT_SECONDS, \
+    EXIT_CODE_TIMEOUT
 from text_detection import BinaryDetector
 
+
+LOG4J_FORMAT = "%(asctime)s %(levelname)-5s %(name)s - %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=LOG4J_FORMAT,
+    datefmt=DATE_FORMAT
+)
 logger = logging.getLogger("feed")
 
 
