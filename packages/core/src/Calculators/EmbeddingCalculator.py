@@ -5,22 +5,9 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, DYNAMIC_SEQ_LENGTH
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
 
 logger = logging.getLogger(__name__)
-
-
-def _next_power_of_2(n: int) -> int:
-    """Return the smallest power of 2 >= n, minimum 32."""
-    if n <= 32:
-        return 32
-    n -= 1
-    n |= n >> 1
-    n |= n >> 2
-    n |= n >> 4
-    n |= n >> 8
-    n |= n >> 16
-    return n + 1
 
 
 class EmbeddingCalculator:
@@ -88,32 +75,6 @@ class EmbeddingCalculator:
 
     def calculate_batch(self, chunks: list[str]) -> list[bytes]:
         assert self._model is not None
-        if DYNAMIC_SEQ_LENGTH:
-            # Dynamically adjust sequence length to save memory and compute.
-            try:
-                # Use tokenizer to get token counts without full encoding if possible,
-                # but sentence-transformers usually requires full encoding to get lengths accurately.
-                # However, we can use 'encode' with add_special_tokens=True.
-                max_tokens = 0
-                token_results = self._model.tokenizer(
-                    chunks, 
-                    padding=False, 
-                    truncation=False, 
-                    add_special_tokens=True,
-                    return_attention_mask=False,
-                    return_token_type_ids=False
-                )
-                for ids in token_results["input_ids"]:
-                    max_tokens = max(max_tokens, len(ids))
-                
-                # Round up and cap at native model limit.
-                native_max = getattr(self._model, "max_seq_length", 1024)
-                new_max = min(native_max, _next_power_of_2(max_tokens))
-                
-                self._model.max_seq_length = new_max
-            except Exception as e:
-                logger.debug("Failed to dynamically adjust seq length: %r", e)
-
         vecs = self._model.encode(
             chunks,
             normalize_embeddings=True,

@@ -82,6 +82,7 @@ class PersistInPostgres(PersistenceAdapter):
             )
             """,
             f"CREATE INDEX IF NOT EXISTS {self._table}_search_vector_idx ON {self._table} USING GIN (search_vector)",
+            f"CREATE INDEX IF NOT EXISTS {self._table}_embedding_idx ON {self._table} USING hnsw (embedding vector_cosine_ops)",
         ]
         with self._engine.begin() as conn:
             for stmt in ddl:

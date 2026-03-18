@@ -91,39 +91,3 @@ def test_falls_back_to_pytorch_when_onnx_fails(monkeypatch):
     assert len(np.frombuffer(raw, dtype=np.float32)) == calculator_module.EMBEDDING_DIMENSIONS
 
 
-class SeqLengthTrackingSentenceTransformer:
-    """Tracks max_seq_length changes."""
-    def __init__(self, model_id, trust_remote_code=True, device=None, backend=None, **kwargs):
-        self.model_id = model_id
-        self.max_seq_length = 1024
-        self.seq_length_history = []
-
-        class MockTokenizer:
-            def encode(self, text):
-                return [0] * (len(text) // 4 + 1)
-            
-            def __call__(self, texts, **kwargs):
-                if isinstance(texts, str):
-                    return {"input_ids": [self.encode(texts)]}
-                return {"input_ids": [self.encode(t) for t in texts]}
-        self.tokenizer = MockTokenizer()
-
-    def encode(self, texts, normalize_embeddings=True, batch_size=None, show_progress_bar=False):
-        self.seq_length_history.append(self.max_seq_length)
-        if isinstance(texts, list):
-            return [np.ones(calculator_module.EMBEDDING_DIMENSIONS, dtype=np.float32) for _ in texts]
-        return np.ones(calculator_module.EMBEDDING_DIMENSIONS, dtype=np.float32)
-
-
-def test_dynamic_seq_length_adjusts_for_batch(monkeypatch):
-    monkeypatch.setattr(calculator_module, "SentenceTransformer", SeqLengthTrackingSentenceTransformer)
-
-    calc = calculator_module.EmbeddingCalculator()
-
-    # Short chunks - should use smaller seq length
-    short_chunks = ["hello", "world", "test"]
-    calc.calculate_batch(short_chunks)
-
-    # Seq length should be reduced (not 1024)
-    assert calc._model is not None
-    assert calc._model.seq_length_history[-1] < 1024
