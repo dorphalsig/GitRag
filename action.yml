@@ -34,7 +34,6 @@ outputs:
     value: ${{ steps.run-indexer.outputs.stdout }}
 runs:
   using: "composite"
-  id: run-indexer
   steps:
     - name: Set up Python
       uses: actions/setup-python@v5
