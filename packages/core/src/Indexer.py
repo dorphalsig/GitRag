@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Indexer.py — lean orchestrator
+Indexer.py — Simplified and robust orchestrator.
 
-- Input: single positional argument `repo`
-- Detects last-commit changes (handles initial commit)
-- Renames => DELETE (old path) + PROCESS (new path)
-- Filters binaries via `git --numstat` / gitattributes
-- PROCESS: chunk -> embed -> persist
-- DELETE: persist.delete_batch(paths)
-- Persistence is routed through the libSQL adapter
-- Prints a concise JSON summary to stdout
+Behavior:
+- Uses one git-diff-based selection path for both delta and full runs.
+- Lazy iteration for file selection and chunking.
+- Multi-batch file buffering: persists only complete files.
+- Timeout gate before each embedding batch.
+- Returns exit code 75 on timeout.
 """
 from __future__ import annotations
 
@@ -20,8 +18,8 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from typing import Dict, Iterator, List, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, Iterator, List, Set, Tuple, Any
 
 import pathspec
 
@@ -29,8 +27,13 @@ from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
 from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
-from constants import DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE, SOFT_TIMEOUT_SECONDS, \
-    EXIT_CODE_TIMEOUT
+from constants import (
+    DEFAULT_DB_PROVIDER,
+    DEFAULT_TABLE_NAME,
+    EMBEDDING_BATCH_SIZE,
+    SOFT_TIMEOUT_SECONDS,
+    EXIT_CODE_TIMEOUT,
+)
 from text_detection import BinaryDetector
 
 
@@ -42,49 +45,22 @@ logging.basicConfig(
     format=LOG4J_FORMAT,
     datefmt=DATE_FORMAT
 )
-logger = logging.getLogger("feed")
+logger = logging.getLogger("indexer")
 
 
-@dataclass(frozen=True)
-class ProcessFilesResult:
-    """Result for _process_files with backward-compatible tuple-style access."""
-
-    processed_chunks: int
-    failed_paths: list[str]
+@dataclass
+class IndexingResult:
+    processed_chunks: int = 0
+    processed_files: int = 0
+    deleted_files: int = 0
+    failed_paths: List[str] = field(default_factory=list)
     timed_out: bool = False
-
-    def __iter__(self) -> Iterator[object]:
-        yield self.processed_chunks
-        yield self.failed_paths
-
-    def __getitem__(self, index: int):
-        if index == 0:
-            return self.processed_chunks
-        if index == 1:
-            return self.failed_paths
-        if index == 2:
-            return self.timed_out
-        raise IndexError(index)
-
-    def __len__(self) -> int:
-        return 2
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, int):
-            return self.processed_chunks == other
-        return (self.processed_chunks, self.failed_paths) == other
+    skipped_binary: List[str] = field(default_factory=list)
+    actions: List[Dict[str, str]] = field(default_factory=list)
 
 
 def _run_git(args: List[str]) -> str:
-    """Run a git command and return stdout as text.
-
-    Raises:
-        RuntimeError: when `git` is missing or the command fails.
-
-    Notes:
-        - We keep this wrapper minimal and deterministic.
-        - stderr from the failing command is surfaced in the message.
-    """
+    """Run a git command and return stdout as text."""
     try:
         out = subprocess.run(
             ["git", "-c", "core.quotePath=false", *args],
@@ -94,7 +70,7 @@ def _run_git(args: List[str]) -> str:
             text=True,
         )
         return out.stdout
-    except FileNotFoundError as e:  # pragma: no cover
+    except FileNotFoundError as e:
         raise RuntimeError("git not found on PATH") from e
     except subprocess.CalledProcessError as e:
         msg = e.stderr.strip() or e.stdout.strip() or "unknown git error"
@@ -115,34 +91,11 @@ def _resolve_range(from_sha: str | None = None, to_sha: str | None = None) -> Tu
         return empty_tree, "HEAD"
 
 
-def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dict[str, str]]]:
-    """Summarize file changes in a commit range.
-
-    Inputs:
-        rng: (from_ref, to_ref) commit-ish pair to compare (e.g., ("HEAD^", "HEAD")).
-
-    Behavior:
-        - Runs: git diff --name-status --find-renames -z <from>..<to>
-        - With -z, each record is NUL-terminated; within a record, status and first path are tab-separated.
-        - Renames/Copies (R*/C*): record encodes "STATUS<TAB>old", and the next NUL token is "new".
-          We treat them as DELETE(old) + PROCESS(new).
-        - 'D' → DELETE; everything else → PROCESS.
-
-    Outputs:
-        (to_process, to_delete, actions): sets of paths and a flat audit log.
-
-    Exceptions:
-        Propagates RuntimeError from _run_git(...) if git is missing or the command fails.
-    """
+def _iter_git_changes(rng: Tuple[str, str]) -> Iterator[Tuple[str, str, str]]:
+    """Lazily parse git diff for changes. Yields (status, old_path, new_path)."""
     frm, to = rng
     raw = _run_git(["diff", "--name-status", "--find-renames", "-z", f"{frm}..{to}"])
     tokens = raw.split("\x00")
-
-    to_process: Set[str] = set()
-    to_delete: Set[str] = set()
-    actions: List[Dict[str, str]] = []
-    patterns = _get_ignore_patterns()
-    spec = pathspec.PathSpec.from_lines("gitignore", patterns) if patterns else None
 
     i = 0
     while i < len(tokens):
@@ -153,87 +106,79 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
 
         if status.startswith(("R", "C")):
             if i + 2 < len(tokens):
-                old_path, new_path = tokens[i + 1], tokens[i + 2]
-                if not _is_path_ignored(old_path, spec):
-                    to_delete.add(old_path)
-                    actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
-                if not _is_path_ignored(new_path, spec):
-                    to_process.add(new_path)
-                    actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
+                yield status, tokens[i + 1], tokens[i + 2]
                 i += 3
             else:
                 i += 1
         else:
             if i + 1 < len(tokens):
-                path = tokens[i + 1]
-                if not _is_path_ignored(path, spec):
-                    if status == "D":
-                        to_delete.add(path)
-                        actions.append({"action": "delete", "path": path, "reason": "status=D"})
-                    else:
-                        to_process.add(path)
-                        actions.append({"action": "process", "path": path, "reason": f"status={status}"})
+                yield status, tokens[i + 1], ""
                 i += 2
             else:
                 i += 1
 
-    return to_process, to_delete, actions
+
+def _get_ignore_spec() -> pathspec.PathSpec | None:
+    val = (os.environ.get("GITRAG_IGNORE") or "").strip()
+    if not val:
+        return None
+    patterns = [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
+    return pathspec.PathSpec.from_lines("gitignore", patterns)
 
 
-def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) -> Set[str]:
-    """Filter candidate paths down to text files using a shared binary detector."""
-    if not paths:
-        return set()
+def _iter_selected_paths(
+    rng: Tuple[str, str],
+    detector: BinaryDetector,
+    is_full: bool,
+    already_indexed: Set[str],
+) -> Iterator[Dict[str, Any]]:
+    """Lazily yield file selection actions (process/delete) with filtering applied."""
+    spec = _get_ignore_spec()
 
-    detector = detector or BinaryDetector()
-    text: Set[str] = set()
-    for p in sorted(paths):
-        try:
-            if not detector.is_binary(p):
-                text.add(p)
-        except Exception as exc:  # pragma: no cover - defensive log only
-            logger.debug("Binary detection failed for %s: %s", p, exc)
-    return text
+    for status, p1, p2 in _iter_git_changes(rng):
+        # Handle rename/copy: p1 is old, p2 is new
+        if status.startswith(("R", "C")):
+            # Delete old path
+            if spec is None or not spec.match_file(p1):
+                yield {"action": "delete", "path": p1, "reason": "rename/copy"}
 
+            # Process new path
+            path = p2
+            reason = "rename/copy"
+        else:
+            path = p1
+            if status == "D":
+                if spec is None or not spec.match_file(path):
+                    yield {"action": "delete", "path": path, "reason": "status=D"}
+                continue
+            reason = f"status={status}"
 
-def _collect_full_repo(detector: BinaryDetector) -> Tuple[Set[str], List[str], List[Dict[str, str]]]:
-    """Enumerate all repo files (tracked + unignored) and classify text vs binary."""
-    tracked = _list_paths(["ls-files", "--cached"])
-    others = _list_paths(["ls-files", "--others", "--exclude-standard"])
-    candidates = tracked | others
+        # Filtering for process actions
+        if spec and spec.match_file(path):
+            continue
 
-    patterns = _get_ignore_patterns()
-    if patterns:
-        spec = pathspec.PathSpec.from_lines("gitignore", patterns)
-        candidates = {p for p in candidates if not _is_path_ignored(p, spec)}
+        if detector.is_binary(path):
+            yield {"action": "skip", "path": path, "reason": "binary"}
+            continue
 
-    text = _filter_text_files(candidates, detector=detector)
-    skipped = sorted(candidates - text)
-    actions = [{"action": "process", "path": p, "reason": "full-index"} for p in sorted(text)]
-    return text, skipped, actions
+        if is_full and path in already_indexed:
+            yield {"action": "skip", "path": path, "reason": "already-indexed"}
+            continue
 
-
-def _list_paths(args: List[str]) -> Set[str]:
-    """Return git command output as a set of file paths, ignoring blanks."""
-    raw = _run_git(args)
-    return {line for line in (s.strip() for s in raw.splitlines()) if line}
+        yield {"action": "process", "path": path, "reason": reason}
 
 
 def _resolve_db_cfg() -> DBConfig:
-    provider = (_env_value("DB_PROVIDER") or DEFAULT_DB_PROVIDER).lower()
-    database_url = _env_value("DATABASE_URL")
-    if not database_url and provider == "libsql":
-        database_url = _env_value("TURSO_DATABASE_URL")
+    provider = (os.environ.get("DB_PROVIDER") or DEFAULT_DB_PROVIDER).lower()
+    database_url = os.environ.get("DATABASE_URL") or os.environ.get("TURSO_DATABASE_URL")
 
     if not database_url:
-        if provider == "libsql":
-            raise RuntimeError("DATABASE_URL (or TURSO_DATABASE_URL for libsql) is required")
-        raise RuntimeError(f"DATABASE_URL is required for provider '{provider}'")
+        raise RuntimeError(f"DATABASE_URL is required (provider='{provider}')")
 
-    auth_token = _env_value("DB_AUTH_TOKEN") or _env_value("TURSO_AUTH_TOKEN") or None
+    auth_token = os.environ.get("DB_AUTH_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN")
     if provider == "libsql":
-        table = _env_value("LIBSQL_TABLE") or DEFAULT_TABLE_NAME
-        fts_table = _env_value("LIBSQL_FTS_TABLE") or None
+        table = os.environ.get("LIBSQL_TABLE") or DEFAULT_TABLE_NAME
+        fts_table = os.environ.get("LIBSQL_FTS_TABLE")
         return LibsqlConfig.from_parts(
             database_url=database_url,
             auth_token=auth_token,
@@ -244,175 +189,173 @@ def _resolve_db_cfg() -> DBConfig:
     return DBConfig(provider=provider, url=database_url, auth_token=auth_token, table_map={})
 
 
-def _env_value(name: str) -> str:
-    return (os.environ.get(name) or "").strip()
-
-
-def _get_ignore_patterns() -> List[str]:
-    val = _env_value("GITRAG_IGNORE")
-    if not val:
-        return []
-    # Split by comma or semicolon
-    return [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
-
-
-def _is_path_ignored(path: str, spec: pathspec.PathSpec | None) -> bool:
-    if spec is None:
-        return False
-    return spec.match_file(path)
-
-
-def _load_components(repo: str) -> Tuple[EmbeddingCalculator, PersistenceAdapter]:
-    """Initialize the embedding calculator and persistence layer.
-
-    Raises:
-        RuntimeError: when any required env var is missing.
-    """
+def _run_indexing(
+    repo: str,
+    rng: Tuple[str, str],
+    is_full: bool,
+    branch: str | None = None,
+    start_time: float | None = None,
+) -> IndexingResult:
+    """Orchestrate the indexing pipeline."""
     calc = EmbeddingCalculator()
     cfg = _resolve_db_cfg()
     persist = create_persistence_adapter(cfg.provider, cfg=cfg, dim=calc.dimensions)
-    log_target = cfg.url
-    logger.info(
-        "Initialized components for repo=%s (dim=%d, adapter=%s, target=%s)",
-        repo,
-        calc.dimensions,
-        cfg.provider,
-        log_target,
-    )
-    return calc, persist
+    detector = BinaryDetector()
 
+    already_indexed = persist.get_indexed_paths(repo=repo) if is_full else set()
+    res = IndexingResult()
 
-def _process_files(paths, repo, calc, persist, branch=None, skip_paths: Set[str] | None = None, start_time: float | None = None):
-    total = 0
-    all_paths = list(paths)
-    _skip = skip_paths if skip_paths is not None else set()
-    path_list = [p for p in all_paths if p not in _skip]
-    skipped = len(all_paths) - len(path_list)
-    if skipped:
-        logger.info("Checkpointing: skipping %d already-indexed paths", skipped)
-    logger.info("Chunking %d files", len(path_list))
-    failed_paths: list[str] = []
-    chunks: list[Chunk] = []
+    # Selection and processing pipeline
+    embedding_queue: List[Chunk] = []
+    # file_buffers maps path -> {total_chunks: int, chunks: List[Chunk]}
+    file_buffers: Dict[str, Dict[str, Any]] = {}
 
-    def _flush_batch(batch: list[Chunk]) -> int:
+    def _flush_embedding_batch(batch: List[Chunk]) -> int:
         if not batch:
             return 0
-        logger.info("Calculating embeddings for %d chunks", len(batch))
-        text = [chunk.chunk for chunk in batch]
+        logger.info("Embedding batch: %d chunks", len(batch))
+        texts = [c.chunk for c in batch]
         try:
-            embeddings = calc.calculate_batch(text)
-            for chunk, emb in zip(batch, embeddings):
-                object.__setattr__(chunk, "embeddings", emb)
-            persist.persist_batch(batch)
-            return len(embeddings)
+            embeddings = calc.calculate_batch(texts)
+            for c, emb in zip(batch, embeddings):
+                object.__setattr__(c, "embeddings", emb)
+
+            # Identify which files are now complete
+            completed_files: List[List[Chunk]] = []
+            for c in batch:
+                buf = file_buffers.get(c.path)
+                if not buf:
+                    continue
+                buf["embedded_count"] += 1
+                if buf["embedded_count"] == buf["total_count"]:
+                    completed_files.append(buf["chunks"])
+                    del file_buffers[c.path]
+
+            # Persist completed files
+            for file_chunks in completed_files:
+                persist.persist_batch(file_chunks)
+                res.processed_files += 1
+
+            return len(batch)
         except Exception:
-            logger.exception("Embed/persist failed for batch size=%d", len(batch))
-            failed_paths.extend(c.path for c in batch)
+            logger.exception("Batch failed")
+            for c in batch:
+                res.failed_paths.append(c.path)
+                if c.path in file_buffers:
+                    del file_buffers[c.path]
             return 0
 
-    for path in path_list:
-        logger.info("Processing %s", path)
+    # 1. Selection & Deletion pass
+    selection_iter = _iter_selected_paths(rng, detector, is_full, already_indexed)
+    to_process: List[str] = []
+
+    for item in selection_iter:
+        path = item["path"]
+        action = item["action"]
+        res.actions.append(item)
+
+        if action == "delete":
+            try:
+                persist.delete_batch([path], repo=repo)
+                res.deleted_files += 1
+            except Exception:
+                logger.exception("Failed to delete %s", path)
+                res.failed_paths.append(path)
+        elif action == "process":
+            to_process.append(path)
+        elif action == "skip" and item["reason"] == "binary":
+            res.skipped_binary.append(path)
+
+    # 2. Lazy chunking and embedding loop
+    for path in to_process:
+        # Timeout gate before potentially launching a batch or starting a new file
+        if start_time and SOFT_TIMEOUT_SECONDS > 0:
+            if time.time() - start_time >= SOFT_TIMEOUT_SECONDS:
+                res.timed_out = True
+                break
+
         try:
-            for chunk in chunker.chunk_file(path, repo, branch=branch):
-                # Check soft timeout before processing each file
-                if start_time is not None and SOFT_TIMEOUT_SECONDS > 0:
-                    elapsed = time.time() - start_time
-                    if elapsed >= SOFT_TIMEOUT_SECONDS:
-                        return ProcessFilesResult(total, failed_paths, timed_out=True)
+            file_chunks = chunker.chunk_file(path, repo, branch=branch)
+            if not file_chunks:
+                # Still count as processed if it has no chunks (e.g. empty file)
+                res.processed_files += 1
+                continue
 
-                chunks.append(chunk)
-                if len(chunks) >= EMBEDDING_BATCH_SIZE:
-                    batch = chunks
-                    chunks = []
-                    total += _flush_batch(batch)
-        except Exception as e:
-            logger.error("Failed processing %s: %s", path, e)
-            failed_paths.append(path)
+            file_buffers[path] = {
+                "total_count": len(file_chunks),
+                "embedded_count": 0,
+                "chunks": file_chunks
+            }
 
-    if chunks:
-        total += _flush_batch(chunks)
+            for c in file_chunks:
+                embedding_queue.append(c)
+                if len(embedding_queue) >= EMBEDDING_BATCH_SIZE:
+                    # Timeout gate immediately before launch
+                    if start_time and SOFT_TIMEOUT_SECONDS > 0:
+                        if time.time() - start_time >= SOFT_TIMEOUT_SECONDS:
+                            res.timed_out = True
+                            return res # Stop immediately, do not launch this batch
 
-    return ProcessFilesResult(total, failed_paths)
+                    res.processed_chunks += _flush_embedding_batch(embedding_queue)
+                    embedding_queue = []
+
+        except Exception:
+            logger.exception("Failed to chunk %s", path)
+            res.failed_paths.append(path)
+
+    # Final flush
+    if not res.timed_out and embedding_queue:
+        res.processed_chunks += _flush_embedding_batch(embedding_queue)
+
+    return res
 
 
 def main() -> None:
-    """CLI entrypoint.
-
-    - Parses single positional `repo`
-    - Determines last-commit range
-    - Computes to-process / to-delete (with rename handling)
-    - Filters binaries out
-    - Deletes removed paths; processes text paths
-    - Prints JSON summary
-    """
     parser = argparse.ArgumentParser(description="Process repository changes for indexing.")
     parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
-    parser.add_argument("--full", action="store_true", help="Index all tracked and unignored files (initial sync).")
-    parser.add_argument("--branch", default=None, help="Optional branch name to attach to indexed chunks.")
-    parser.add_argument("--from-sha", default=None, help="Start commit SHA for diff range")
-    parser.add_argument("--to-sha", default=None, help="End commit SHA for diff range")
+    parser.add_argument("--full", action="store_true", help="Index all files.")
+    parser.add_argument("--branch", default=None, help="Optional branch name.")
+    parser.add_argument("--from-sha", default=None, help="Start SHA")
+    parser.add_argument("--to-sha", default=None, help="End SHA")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-
-    detector = BinaryDetector()
-    logger.info("Starting indexer for repo=%s branch=%s", args.repo, args.branch or "<none>")
-
-    if args.full:
-        logger.info("Running in full indexing mode")
-        text_to_proc, skipped_binary, actions = _collect_full_repo(detector)
-        rng = ("FULL_REBUILD", "HEAD")
-        to_del: Set[str] = set()
-    else:
-        rng = _resolve_range(args.from_sha, args.to_sha)
-        to_proc, to_del, actions = _collect_changes(rng)
-        logger.info("Running in delta mode: %d process candidates, %d deletions", len(to_proc), len(to_del))
-        text_to_proc = _filter_text_files(to_proc, detector=detector)
-        skipped_binary = sorted(list(to_proc - text_to_proc))
-
-    calc, persist = _load_components(args.repo)
-
-    already_indexed: set[str] = persist.get_indexed_paths() if args.full else set()
-
-    deleted_count = 0
-    if to_del:
-        try:
-            persist.delete_batch(sorted(to_del))
-            deleted_count = len(to_del)
-        except Exception as e:
-            logger.error("Deletion pass failed: %s", e)
+    logger.info("Starting indexer: repo=%s branch=%s mode=%s",
+                args.repo, args.branch or "none", "full" if args.full else "delta")
 
     start_time = time.time()
-    result = _process_files(
-        sorted(text_to_proc),
-        args.repo,
-        calc,
-        persist,
-        branch=args.branch,
-        skip_paths=already_indexed,
-        start_time=start_time,
-    )
-    processed_chunks, failed_files = result[0], result[1]
 
-    summary = {
-        "repo": args.repo,
-        "range": {"from": rng[0], "to": rng[1]},
-        "mode": "full" if args.full else "delta",
-        "processed_files": len(text_to_proc),
-        "deleted_files": deleted_count,
-        "processed_chunks": processed_chunks,
-        "skipped_binary": skipped_binary,
-        "actions": actions,
-        "failed_paths": failed_files,
-        "timeout": result.timed_out,
-    }
-    print(json.dumps(summary, ensure_ascii=False))
+    try:
+        if args.full:
+            # Full run starts from empty tree to HEAD
+            empty_tree = _run_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
+            rng = (empty_tree, "HEAD")
+        else:
+            rng = _resolve_range(args.from_sha, args.to_sha)
 
-    if result.timed_out:
-        sys.exit(EXIT_CODE_TIMEOUT)
+        res = _run_indexing(args.repo, rng, args.full, branch=args.branch, start_time=start_time)
 
-    if failed_files:
-        exit(1)
+        summary = {
+            "repo": args.repo,
+            "range": {"from": rng[0], "to": rng[1]},
+            "mode": "full" if args.full else "delta",
+            "processed_files": res.processed_files,
+            "deleted_files": res.deleted_files,
+            "processed_chunks": res.processed_chunks,
+            "skipped_binary": res.skipped_binary,
+            "actions": res.actions,
+            "failed_paths": sorted(list(set(res.failed_paths))),
+            "timeout": res.timed_out,
+        }
+        print(json.dumps(summary, ensure_ascii=False))
+
+        if res.timed_out:
+            sys.exit(EXIT_CODE_TIMEOUT)
+        if res.failed_paths:
+            sys.exit(1)
+
+    except Exception:
+        logger.exception("Fatal error in main")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

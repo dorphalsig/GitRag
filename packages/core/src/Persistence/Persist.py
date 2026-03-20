@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class PersistenceAdapter(Protocol):
     def persist_batch(self, chunks: Sequence[Chunk]) -> None: ...
 
-    def delete_batch(self, paths: List[str]) -> None: ...
+    def delete_batch(self, paths: List[str], repo: str | None = None) -> None: ...
 
     def search(
         self,
@@ -48,7 +48,7 @@ class PersistenceAdapter(Protocol):
         branch: str | None = None,
     ) -> List[Chunk]: ...
 
-    def get_indexed_paths(self) -> set[str]:
+    def get_indexed_paths(self, repo: str | None = None) -> set[str]:
         """Return the set of file paths that have already been indexed."""
         ...
 
@@ -154,25 +154,37 @@ class PersistInLibsql(PersistenceAdapter):
             conn.execute(delete_fts_stmt, [{"id": p["id"]} for p in fts_params])
             conn.execute(insert_fts_stmt, fts_params)
 
-    def delete_batch(self, paths: List[str]) -> None:
+    def delete_batch(self, paths: List[str], repo: str | None = None) -> None:
         if not paths:
             return
+        where_clause = "path IN :paths"
+        params = {"paths": tuple(paths)}
+        if repo is not None:
+            where_clause += " AND repo = :repo"
+            params["repo"] = repo
+
         delete_stmt = text(
-            f"DELETE FROM {self._table} WHERE path IN :paths"
+            f"DELETE FROM {self._table} WHERE {where_clause}"
         ).bindparams(bindparam("paths", expanding=True))
         delete_fts_stmt = text(
             f"DELETE FROM {self._fts_table} WHERE id NOT IN (SELECT id FROM {self._table})"
         )
 
         with self._engine.begin() as conn:
-            conn.execute(delete_stmt, {"paths": tuple(paths)})
+            conn.execute(delete_stmt, params)
             conn.execute(delete_fts_stmt)
 
-    def get_indexed_paths(self) -> set[str]:
+    def get_indexed_paths(self, repo: str | None = None) -> set[str]:
         """Return the set of distinct file paths stored in the chunks table."""
-        sql = text(f"SELECT DISTINCT path FROM {self._table}")
+        where = ""
+        params = {}
+        if repo is not None:
+            where = " WHERE repo = :repo"
+            params["repo"] = repo
+
+        sql = text(f"SELECT DISTINCT path FROM {self._table}{where}")
         with self._engine.connect() as conn:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return {row[0] for row in rows if row[0] is not None}
 
     def close(self) -> None:

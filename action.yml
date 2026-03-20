@@ -64,8 +64,11 @@ runs:
             ARGS="$ARGS --from-sha $BEFORE --to-sha ${{ github.sha }}"
           fi
         fi
-        OUTPUT=$(python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS 2>&1)
-        EXIT_CODE=$?
+        OUTPUT_FILE=$(mktemp)
+        python ${{ github.action_path }}/packages/core/src/Indexer.py "${{ inputs.repo }}" $ARGS 2>&1 | tee "$OUTPUT_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
+        OUTPUT=$(cat "$OUTPUT_FILE")
+        rm "$OUTPUT_FILE"
         
         # Write to GITHUB_OUTPUT using a safe multiline delimiter
         DELIMITER=$(openssl rand -hex 8)

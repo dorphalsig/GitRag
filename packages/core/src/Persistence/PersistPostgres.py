@@ -133,14 +133,20 @@ class PersistInPostgres(PersistenceAdapter):
                     },
                 )
 
-    def delete_batch(self, paths: List[str]) -> None:
+    def delete_batch(self, paths: List[str], repo: str | None = None) -> None:
         if not paths:
             return
+        where_clause = "path IN :paths"
+        params = {"paths": tuple(paths)}
+        if repo is not None:
+            where_clause += " AND repo = :repo"
+            params["repo"] = repo
+
         delete_stmt = text(
-            f"DELETE FROM {self._table} WHERE path IN :paths"
+            f"DELETE FROM {self._table} WHERE {where_clause}"
         ).bindparams(bindparam("paths", expanding=True))
         with self._engine.begin() as conn:
-            conn.execute(delete_stmt, {"paths": tuple(paths)})
+            conn.execute(delete_stmt, params)
 
     def search(
         self,
@@ -238,10 +244,16 @@ class PersistInPostgres(PersistenceAdapter):
                 
         return [self._row_to_chunk(dict(row)) for row in rows]
 
-    def get_indexed_paths(self) -> set[str]:
-        sql = text(f"SELECT DISTINCT path FROM {self._table}")
+    def get_indexed_paths(self, repo: str | None = None) -> set[str]:
+        where = ""
+        params = {}
+        if repo is not None:
+            where = " WHERE repo = :repo"
+            params["repo"] = repo
+
+        sql = text(f"SELECT DISTINCT path FROM {self._table}{where}")
         with self._engine.connect() as conn:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return {row[0] for row in rows}
 
     def _decode_embedding(self, raw: bytes) -> np.ndarray:
