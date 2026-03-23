@@ -13,8 +13,10 @@ from Persistence.Persist import PersistenceAdapter
 from constants import (
     DEFAULT_ATTN_IMPLEMENTATION,
     DEFAULT_INITIAL_RETRIEVAL_LIMIT,
+    MAX_INITIAL_RETRIEVAL_LIMIT,
     DEFAULT_RERANK_TASK_INSTRUCTION,
     DEFAULT_RERANKER_MODEL,
+    RERANK_BATCH_SIZE,
     RETRIEVAL_QUERY_PREFIX,
 )
 
@@ -47,6 +49,7 @@ class Qwen3Reranker:
         self._model_name = model_name
         self._task_instruction = task_instruction or DEFAULT_RERANK_TASK_INSTRUCTION
         self._attn_implementation = attn_implementation
+        self._batch_size = max(1, RERANK_BATCH_SIZE)
         self._ensure_loaded(model_name=model_name, attn_implementation=attn_implementation)
 
     @classmethod
@@ -112,24 +115,31 @@ class Qwen3Reranker:
             )
             for candidate in candidates
         ]
-        encoded = tokenizer(
-            pairs,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt"
-        )
         import torch
 
-        with torch.inference_mode():
-            outputs = model(**encoded)
-        logits = getattr(outputs, "logits", None)
-        if logits is None:
-            return [0.0 for _ in candidates]
-        flat = logits.squeeze(-1).detach().cpu().tolist()
-        if isinstance(flat, float):
-            return [flat]
-        return [float(v) for v in flat]
+        all_scores: list[float] = []
+        batch_size = max(1, int(getattr(self, "_batch_size", RERANK_BATCH_SIZE)))
+        for start in range(0, len(pairs), batch_size):
+            batch_pairs = pairs[start : start + batch_size]
+            encoded = tokenizer(
+                batch_pairs,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            )
+            with torch.inference_mode():
+                outputs = model(**encoded)
+            logits = getattr(outputs, "logits", None)
+            if logits is None:
+                all_scores.extend([0.0 for _ in batch_pairs])
+                continue
+            flat = logits.squeeze(-1).detach().cpu().tolist()
+            if isinstance(flat, float):
+                all_scores.append(float(flat))
+            else:
+                all_scores.extend(float(v) for v in flat)
+        return all_scores
 
 
 @dataclass
@@ -152,10 +162,11 @@ class Retriever:
             return []
 
         query_embedding = self._calculate_query_embedding(RETRIEVAL_QUERY_PREFIX + normalized_query)
+        initial_limit = max(top_k, min(max(self.initial_limit, top_k), MAX_INITIAL_RETRIEVAL_LIMIT))
         candidates = self.persistence.search(
             query_embedding=query_embedding,
             query_text=normalized_query,
-            limit=max(self.initial_limit, top_k),
+            limit=initial_limit,
             repo=repo,
             branch=branch,
         )

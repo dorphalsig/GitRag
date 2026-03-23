@@ -15,6 +15,8 @@ DEFAULT_RERANK_TASK_INSTRUCTION = os.getenv("rerank_instruction","Given a search
 DEFAULT_ATTN_IMPLEMENTATION = "sdpa"
 DEFAULT_TOP_K = int(os.getenv("topk", 10))
 DEFAULT_INITIAL_RETRIEVAL_LIMIT = DEFAULT_TOP_K * 10
+MAX_INITIAL_RETRIEVAL_LIMIT = int(os.getenv("max_initial_limit", 50))
+RERANK_BATCH_SIZE = int(os.getenv("rerank_batch_size", 8))
 
 # Persistence constants
 DEFAULT_TABLE_NAME = "chunks"

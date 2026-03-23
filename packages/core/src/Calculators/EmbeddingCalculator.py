@@ -5,7 +5,7 @@ from typing import Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_BATCH_SIZE, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +75,21 @@ class EmbeddingCalculator:
 
     def calculate_batch(self, chunks: list[str]) -> list[bytes]:
         assert self._model is not None
-        vecs = self._model.encode(
-            chunks,
-            normalize_embeddings=True,
-            batch_size=len(chunks),
-            show_progress_bar=False,
-        )
-        results = []
-
-        for vec in vecs:
-            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-            if arr.shape[0] != EMBEDDING_DIMENSIONS:
-                raise ValueError(f"Unexpected embedding dimension {arr.shape[0]}")
-            results.append(arr.tobytes())
+        if not chunks:
+            return []
+        batch_size = max(1, min(EMBEDDING_BATCH_SIZE, len(chunks)))
+        results: list[bytes] = []
+        for start in range(0, len(chunks), batch_size):
+            window = chunks[start : start + batch_size]
+            vecs = self._model.encode(
+                window,
+                normalize_embeddings=True,
+                batch_size=batch_size,
+                show_progress_bar=False,
+            )
+            for vec in vecs:
+                arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+                if arr.shape[0] != EMBEDDING_DIMENSIONS:
+                    raise ValueError(f"Unexpected embedding dimension {arr.shape[0]}")
+                results.append(arr.tobytes())
         return results

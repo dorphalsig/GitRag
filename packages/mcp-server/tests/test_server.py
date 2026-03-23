@@ -110,9 +110,12 @@ def test_search_code_tool_with_authenticated_request(scalekit_env):
 
     assert result.is_error is False
     assert isinstance(result.structured_content, dict)
-    chunks = result.structured_content["result"]
+    payload = result.structured_content
+    chunks = payload["results"]
     assert chunks[0]["path"] == "src/main.py"
     assert chunks[0]["embeddings"] is None
+    assert "<file path=" in chunks[0]["formatted"]
+    assert "```python" in payload["markdown"]
     assert retriever.calls == [("needle", 3, None, None)]
 
 
@@ -141,3 +144,11 @@ def test_search_code_tool_rejects_invalid_token(scalekit_env):
 
     server.should_exit = True
     thread.join(timeout=2)
+
+
+def test_create_server_without_scalekit_when_auth_optional(monkeypatch):
+    monkeypatch.delenv("SCALEKIT_ENVIRONMENT_URL", raising=False)
+    monkeypatch.delenv("SCALEKIT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SCALEKIT_RESOURCE_ID", raising=False)
+    server = create_mcp_server(retriever=FakeRetriever(), require_auth=False)
+    assert server is not None
