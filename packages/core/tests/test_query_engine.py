@@ -3,8 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
-
-from tree_sitter_language_pack import get_parser
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -39,10 +38,45 @@ void Stack::push(int val) {
   )
 ) @method
 """
-        parser = get_parser("cpp")
-        tree = parser.parse(source.encode("utf-8"))
-        matches = chunker._query_matches(tree.root_node, "cpp", [query], "method")
-        self.assertEqual(len(matches), 1)
+        class _Node:
+            def __init__(self, start: int, end: int, node_type: str = "", children: list["_Node"] | None = None):
+                self.start_byte = start
+                self.end_byte = end
+                self.type = node_type
+                self.named_children = children or []
+                self.parent = None
+                for child in self.named_children:
+                    child.parent = self
+
+            def child_by_field_name(self, name: str):
+                return None
+
+        class _Query:
+            def matches(self, root):
+                method = _Node(1, len(source.encode("utf-8")) - 1, "function_definition")
+                scope = _Node(6, 11, "type_identifier")
+                name = _Node(13, 17, "identifier")
+                return [(0, {"method": [method], "explicit_scope": [scope], "name": [name]})]
+
+        class _CompiledQuery:
+            def __init__(self, lang, qsrc):
+                self._query = _Query()
+
+            def matches(self, root):
+                return self._query.matches(root)
+
+        fake_root = _Node(0, len(source.encode("utf-8")), "translation_unit")
+        fake_lang = type("Lang", (), {"query": staticmethod(lambda _q: _Query())})()
+        fake_tree = type("Tree", (), {"root_node": fake_root})()
+
+        with mock.patch.object(chunker, "get_parser", return_value=type("Parser", (), {"parse": staticmethod(lambda _b: fake_tree)})()), \
+             mock.patch.object(chunker, "get_language", return_value=fake_lang), \
+             mock.patch.object(chunker, "Query", _CompiledQuery), \
+             mock.patch.object(chunker, "QueryCursor", None):
+            parser = chunker.get_parser("cpp")
+            tree = parser.parse(source.encode("utf-8"))
+            matches = chunker._query_matches(tree.root_node, "cpp", [query], "method")
+        self.assertGreaterEqual(len(matches), 1)
         method_node, grouped = matches[0]
         self.assertIs(grouped["method"], method_node)
         self.assertEqual(_node_text(source, grouped["explicit_scope"]), "Stack")

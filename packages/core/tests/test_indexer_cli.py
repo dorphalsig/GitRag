@@ -120,6 +120,79 @@ class IndexerRefactorTests(unittest.TestCase):
                 self.assertEqual(res.processed_files, 2)
                 self.assertEqual(res.processed_chunks, 3)
                 self.assertEqual(persist.persist_batch.call_count, 2)
+                persisted_paths = [call.args[0][0].path for call in persist.persist_batch.call_args_list]
+                self.assertEqual(persisted_paths, ["file1.py", "file2.py"])
+
+    def test_run_indexing_handles_lazy_chunk_iterables(self):
+        class MockChunk:
+            def __init__(self, path):
+                self.path = path
+                self.embeddings = None
+                self.repo = "repo"
+                self.branch = "branch"
+                self.chunk = "chunk"
+            def id(self): return f"{self.path}_id"
+
+        def lazy_chunks(path, *args, **kwargs):
+            if path == "VERSION":
+                yield MockChunk(path)
+            else:
+                return
+
+        with mock.patch("Indexer.chunker.chunk_file", side_effect=lazy_chunks), \
+             mock.patch("Indexer.EmbeddingCalculator") as mock_calc_cls, \
+             mock.patch("Indexer.create_persistence_adapter") as mock_persist_factory, \
+             mock.patch("Indexer.BinaryDetector"), \
+             mock.patch("Indexer.EMBEDDING_BATCH_SIZE", 4):
+            calc = mock_calc_cls.return_value
+            calc.calculate_batch.side_effect = lambda texts: [b"emb"] * len(texts)
+            persist = mock_persist_factory.return_value
+            persist.get_indexed_paths.return_value = set()
+
+            with mock.patch("Indexer._iter_selected_paths") as mock_select:
+                mock_select.return_value = iter([
+                    {"action": "process", "path": "VERSION", "reason": "test"},
+                ])
+                res = Indexer._run_indexing("repo", ("A", "B"), False)
+
+        self.assertEqual(res.processed_files, 1)
+        self.assertEqual(res.processed_chunks, 1)
+        persist.persist_batch.assert_called_once()
+        self.assertEqual(persist.persist_batch.call_args.args[0][0].path, "VERSION")
+
+    def test_persistence_requires_all_chunks_embedded(self):
+        class MockChunk:
+            def __init__(self, path):
+                self.path = path
+                self.embeddings = None
+                self.repo = "repo"
+                self.branch = "branch"
+                self.chunk = "chunk"
+            def id(self): return f"{self.path}_id"
+
+        chunks = [MockChunk("a.py"), MockChunk("a.py"), MockChunk("b.py"), MockChunk("b.py")]
+
+        with mock.patch("Indexer.chunker.chunk_file") as mock_chunk_file, \
+             mock.patch("Indexer.EmbeddingCalculator") as mock_calc_cls, \
+             mock.patch("Indexer.create_persistence_adapter") as mock_persist_factory, \
+             mock.patch("Indexer.BinaryDetector"), \
+             mock.patch("Indexer.EMBEDDING_BATCH_SIZE", 2):
+            mock_chunk_file.side_effect = lambda path, *a, **k: chunks[0:2] if path == "a.py" else chunks[2:4]
+            calc = mock_calc_cls.return_value
+            calc.calculate_batch.side_effect = RuntimeError("embedding failure")
+            persist = mock_persist_factory.return_value
+            persist.get_indexed_paths.return_value = set()
+
+            with mock.patch("Indexer._iter_selected_paths") as mock_select:
+                mock_select.return_value = iter([
+                    {"action": "process", "path": "a.py", "reason": "test"},
+                    {"action": "process", "path": "b.py", "reason": "test"},
+                ])
+                res = Indexer._run_indexing("repo", ("A", "B"), False)
+
+        self.assertIn("a.py", res.failed_paths)
+        self.assertIn("b.py", res.failed_paths)
+        persist.persist_batch.assert_not_called()
 
     def test_timeout_gate_before_batch(self):
         with mock.patch("Indexer.chunker.chunk_file") as mock_chunk_file, \
@@ -141,6 +214,15 @@ class IndexerRefactorTests(unittest.TestCase):
                 self.assertTrue(res.timed_out)
                 self.assertEqual(res.processed_chunks, 0)
                 mock_calc_cls.return_value.calculate_batch.assert_not_called()
+
+    def test_main_returns_timeout_exit_code_75(self):
+        with mock.patch.object(sys, "argv", ["Indexer.py", "org/repo"]), \
+             mock.patch("Indexer._resolve_range", return_value=("A", "B")), \
+             mock.patch("Indexer._run_indexing", return_value=Indexer.IndexingResult(timed_out=True)):
+            with self.assertRaises(SystemExit) as raised:
+                Indexer.main()
+
+        self.assertEqual(raised.exception.code, 75)
 
 if __name__ == "__main__":
     unittest.main()

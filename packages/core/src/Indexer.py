@@ -26,7 +26,7 @@ import pathspec
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
-from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter, PersistenceAdapter
+from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter
 from constants import (
     DEFAULT_DB_PROVIDER,
     DEFAULT_TABLE_NAME,
@@ -123,6 +123,8 @@ def _get_ignore_spec() -> pathspec.PathSpec | None:
     if not val:
         return None
     patterns = [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
+    if not patterns:
+        return None
     return pathspec.PathSpec.from_lines("gitignore", patterns)
 
 
@@ -207,7 +209,7 @@ def _run_indexing(
 
     # Selection and processing pipeline
     embedding_queue: List[Chunk] = []
-    # file_buffers maps path -> {total_chunks: int, chunks: List[Chunk]}
+    # file_buffers maps path -> {chunk_count, embedded_count, chunking_done, chunks}
     file_buffers: Dict[str, Dict[str, Any]] = {}
 
     def _flush_embedding_batch(batch: List[Chunk]) -> int:
@@ -221,20 +223,23 @@ def _run_indexing(
                 object.__setattr__(c, "embeddings", emb)
 
             # Identify which files are now complete
-            completed_files: List[List[Chunk]] = []
+            completed_files: List[str] = []
             for c in batch:
                 buf = file_buffers.get(c.path)
                 if not buf:
                     continue
                 buf["embedded_count"] += 1
-                if buf["embedded_count"] == buf["total_count"]:
-                    completed_files.append(buf["chunks"])
-                    del file_buffers[c.path]
+                if buf["chunking_done"] and buf["embedded_count"] == buf["chunk_count"]:
+                    completed_files.append(c.path)
 
             # Persist completed files
-            for file_chunks in completed_files:
-                persist.persist_batch(file_chunks)
+            for path in completed_files:
+                buf = file_buffers.get(path)
+                if not buf:
+                    continue
+                persist.persist_batch(buf["chunks"])
                 res.processed_files += 1
+                del file_buffers[path]
 
             return len(batch)
         except Exception:
@@ -275,19 +280,16 @@ def _run_indexing(
                 break
 
         try:
-            file_chunks = chunker.chunk_file(path, repo, branch=branch)
-            if not file_chunks:
-                # Still count as processed if it has no chunks (e.g. empty file)
-                res.processed_files += 1
-                continue
-
             file_buffers[path] = {
-                "total_count": len(file_chunks),
+                "chunk_count": 0,
                 "embedded_count": 0,
-                "chunks": file_chunks
+                "chunking_done": False,
+                "chunks": []
             }
 
-            for c in file_chunks:
+            for c in chunker.chunk_file(path, repo, branch=branch):
+                file_buffers[path]["chunk_count"] += 1
+                file_buffers[path]["chunks"].append(c)
                 embedding_queue.append(c)
                 if len(embedding_queue) >= EMBEDDING_BATCH_SIZE:
                     # Timeout gate immediately before launch
@@ -299,9 +301,24 @@ def _run_indexing(
                     res.processed_chunks += _flush_embedding_batch(embedding_queue)
                     embedding_queue = []
 
+            buf = file_buffers[path]
+            buf["chunking_done"] = True
+            if buf["chunk_count"] == 0:
+                # Still count as processed if it has no chunks (e.g. empty file)
+                res.processed_files += 1
+                del file_buffers[path]
+            elif buf["embedded_count"] == buf["chunk_count"]:
+                persist.persist_batch(buf["chunks"])
+                res.processed_files += 1
+                del file_buffers[path]
+
         except Exception:
             logger.exception("Failed to chunk %s", path)
             res.failed_paths.append(path)
+            # Drop partially collected chunks for this file; never persist partial files.
+            if path in file_buffers:
+                del file_buffers[path]
+            embedding_queue = [c for c in embedding_queue if c.path != path]
 
     # Final flush
     if not res.timed_out and embedding_queue:
