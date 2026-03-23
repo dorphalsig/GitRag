@@ -5,7 +5,7 @@ description = "MCP server package for GitRag"
 requires-python = ">=3.10"
 dependencies = [
   "gitrag-core",
-  "scalekit-sdk",
+  "scalekit-sdk-python==2.6.0",
   "fastmcp>=2.14.5",
   "uvicorn>=0.40.0",
 ]
@@ -22,7 +22,6 @@ where = ["src"]
 
 [tool.uv.sources]
 gitrag-core = { workspace = true }
-scalekit-sdk = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "../core/src"]

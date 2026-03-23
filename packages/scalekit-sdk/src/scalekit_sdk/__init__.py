@@ -1,1 +1,0 @@
-"""Scalekit SDK package namespace."""

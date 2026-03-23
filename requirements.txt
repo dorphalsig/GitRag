@@ -16,6 +16,8 @@ SQLAlchemy==2.0.48
 sqlalchemy-libsql==0.2.0
 psycopg2-binary==2.9.11
 pgvector==0.4.2
+# Scalekit SDK
+scalekit-sdk-python==2.6.0
 # Dev / tests
 # CPU-only baseline: do not add flash_attn or other GPU-only attention dependencies here.
 pytest==9.0.2
