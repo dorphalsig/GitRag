@@ -23,94 +23,82 @@ class _Calc:
         return [self.calculate(t) for t in texts]
 
 
-class _Persist:
-    def __init__(self) -> None:
-        self.batches: list[list[Chunk]] = []
-
-    def persist_batch(self, chunks):
-        self.batches.append(list(chunks))
-
-
-def test_process_files_forwards_branch_to_chunker_and_persisted_chunks(monkeypatch) -> None:
+def test_run_indexing_forwards_branch_to_chunker_and_persists(monkeypatch) -> None:
     seen: list[tuple[str, str, str | None]] = []
 
     def fake_chunk_file(path: str, repo: str, branch: str | None = None):
         seen.append((path, repo, branch))
-        return [
-            Chunk(
-                chunk="print('x')",
-                repo=repo,
-                branch=branch,
-                path=path,
-                language="python",
-                start_rc=(0, 0),
-                end_rc=(0, 10),
-                start_bytes=0,
-                end_bytes=10,
-            )
-        ]
+        yield Chunk(
+            chunk="print('x')",
+            repo=repo,
+            branch=branch,
+            path=path,
+            language="python",
+            start_rc=(0, 0),
+            end_rc=(0, 10),
+            start_bytes=0,
+            end_bytes=10,
+        )
 
     monkeypatch.setattr(Chunker.chunker, "chunk_file", fake_chunk_file)
+    monkeypatch.setattr(Indexer, "_resolve_db_cfg", lambda: mock.Mock(provider="libsql"))
 
-    persist = _Persist()
-    total = Indexer._process_files(["src/a.py"], "org/repo", _Calc(), persist, branch="feature-x")
+    persist = mock.Mock()
+    persist.get_indexed_paths.return_value = set()
+    monkeypatch.setattr(Indexer, "create_persistence_adapter", lambda *args, **kwargs: persist)
+    monkeypatch.setattr(Indexer, "EmbeddingCalculator", _Calc)
+    monkeypatch.setattr(Indexer, "BinaryDetector", lambda: mock.Mock(is_binary=lambda _: False))
+    monkeypatch.setattr(
+        Indexer,
+        "_iter_selected_paths",
+        lambda *args, **kwargs: iter([{"action": "process", "path": "src/a.py", "reason": "status=M"}]),
+    )
 
-    assert total == 1
+    res = Indexer._run_indexing("org/repo", ("A", "B"), False, branch="feature-x")
+
+    assert res.processed_chunks == 1
+    assert res.processed_files == 1
     assert seen == [("src/a.py", "org/repo", "feature-x")]
-    assert len(persist.batches) == 1
-    assert persist.batches[0][0].branch == "feature-x"
+    assert persist.persist_batch.call_count == 1
+    assert persist.persist_batch.call_args.args[0][0].branch == "feature-x"
 
 
 def test_main_threads_branch_argument_end_to_end(monkeypatch) -> None:
-    persist = _Persist()
-
     monkeypatch.setattr(Indexer, "_resolve_range", lambda *a, **kw: ("HEAD^", "HEAD"))
-    monkeypatch.setattr(
-        Indexer,
-        "_collect_changes",
-        lambda rng: ({"src/a.py"}, set(), [{"action": "process", "path": "src/a.py", "reason": "status=M"}]),
-    )
-    monkeypatch.setattr(Indexer, "_filter_text_files", lambda paths, detector=None: set(paths))
-    monkeypatch.setattr(Indexer, "_load_components", lambda repo: (_Calc(), persist))
 
     seen_branch: list[str | None] = []
+    fake_res = Indexer.IndexingResult(processed_files=1, processed_chunks=1)
 
-    def fake_chunk_file(path: str, repo: str, branch: str | None = None):
+    def fake_run_indexing(repo: str, rng, is_full: bool, branch: str | None = None, start_time=None):
         seen_branch.append(branch)
-        return [
-            Chunk(
-                chunk="hello",
-                repo=repo,
-                branch=branch,
-                path=path,
-                language="python",
-                start_rc=(0, 0),
-                end_rc=(0, 5),
-                start_bytes=0,
-                end_bytes=5,
-            )
-        ]
+        return fake_res
 
-    monkeypatch.setattr(Chunker.chunker, "chunk_file", fake_chunk_file)
+    monkeypatch.setattr(Indexer, "_run_indexing", fake_run_indexing)
 
     with mock.patch.object(sys, "argv", ["Indexer.py", "org/repo", "--branch", "feature-x"]):
         with mock.patch.object(Indexer.logger, "info") as info_spy:
             Indexer.main()
 
     assert seen_branch == ["feature-x"]
-    assert persist.batches[0][0].branch == "feature-x"
     assert any("branch=%s" in str(call.args[0]) for call in info_spy.call_args_list)
 
 
 def test_collect_changes_handles_rename_delete_and_modify(monkeypatch) -> None:
-    payload = "R100\x00old.py\x00new.py\x00D\x00gone.py\x00M\x00keep.py\x00"
-    monkeypatch.setattr(Indexer, "_run_git", lambda args: payload)
+    monkeypatch.setattr(
+        Indexer,
+        "_iter_git_changes",
+        lambda rng: iter([("R100", "old.py", "new.py"), ("D", "gone.py", ""), ("M", "keep.py", "")]),
+    )
+    detector = mock.Mock(is_binary=lambda _: False)
 
-    to_process, to_delete, actions = Indexer._collect_changes(("a", "b"))
+    actions = list(Indexer._iter_selected_paths(("a", "b"), detector, False, set()))
 
-    assert to_process == {"new.py", "keep.py"}
-    assert to_delete == {"old.py", "gone.py"}
-    assert {a["action"] for a in actions} == {"process", "delete"}
+    assert [a for a in actions if a["action"] == "delete"] == [
+        {"action": "delete", "path": "old.py", "reason": "rename/copy"},
+        {"action": "delete", "path": "gone.py", "reason": "status=D"},
+    ]
+    process_paths = {a["path"] for a in actions if a["action"] == "process"}
+    assert process_paths == {"new.py", "keep.py"}
 
 
 def test_resolve_range_fallbacks_to_empty_tree(monkeypatch) -> None:
@@ -128,15 +116,24 @@ def test_resolve_range_fallbacks_to_empty_tree(monkeypatch) -> None:
     assert to == "HEAD"
 
 
-def test_filter_text_files_ignores_binary_and_errors() -> None:
+def test_iter_selected_paths_marks_binary_files_as_skipped() -> None:
     class Detector:
         def is_binary(self, p: str) -> bool:
-            if p == "err.py":
-                raise RuntimeError("boom")
             return p.endswith(".bin")
 
-    out = Indexer._filter_text_files({"a.py", "b.bin", "err.py"}, detector=Detector())
-    assert out == {"a.py"}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        Indexer,
+        "_iter_git_changes",
+        lambda rng: iter([("M", "a.py", ""), ("A", "b.bin", "")]),
+    )
+    try:
+        actions = list(Indexer._iter_selected_paths(("a", "b"), Detector(), False, set()))
+    finally:
+        monkeypatch.undo()
+
+    assert {"action": "skip", "path": "b.bin", "reason": "binary"} in actions
+    assert {"action": "process", "path": "a.py", "reason": "status=M"} in actions
 
 
 def test_run_git_surfaces_failures(monkeypatch) -> None:
