@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from array import array
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
@@ -209,58 +210,47 @@ class PersistInLibsql(PersistenceAdapter):
             repo=repo,
             branch=branch,
         )
-        if not keyword_rows:
-            return []
-
-        # Optimization: calculate vector similarities in batch using numpy
         query_vec = np.asarray(query_embedding, dtype=np.float32).reshape(-1)
         query_norm = np.linalg.norm(query_vec)
         if query_norm > 1e-9:
             query_vec = query_vec / query_norm
+        vector_rows = self._vector_search(
+            query_embedding=query_vec,
+            limit=normalized_limit * 5,
+            repo=repo,
+            branch=branch,
+        )
+        if not keyword_rows and not vector_rows:
+            return []
 
-        candidate_embeddings = []
+        merged: Dict[str, Dict[str, Any]] = {}
         for row in keyword_rows:
-            raw = row.get("embedding")
-            if raw is not None:
-                vec = np.frombuffer(bytes(raw), dtype=np.float32)
-                candidate_embeddings.append(vec)
+            merged[row["id"]] = row
+        for row in vector_rows:
+            existing = merged.get(row["id"])
+            if existing is None:
+                merged[row["id"]] = row
             else:
-                candidate_embeddings.append(np.zeros_like(query_vec))
-        
-        matrix = np.stack(candidate_embeddings)
-        row_norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        # Avoid division by zero
-        matrix_normalized = matrix / np.where(row_norms > 1e-9, row_norms, 1.0)
-        
-        vector_scores = np.dot(matrix_normalized, query_vec)
-        
-        # Hybrid scoring using Reciprocal Rank Fusion (RRF) for robustness
-        # across different score scales (BM25 vs Cosine Similarity).
-        
-        # 1. Rank by vector score
-        vector_ranked = sorted(range(len(keyword_rows)), key=lambda i: vector_scores[i], reverse=True)
-        vector_ranks = {idx: rank for rank, idx in enumerate(vector_ranked)}
-        
-        # 2. Rank by keyword score (they are already sorted by SQLite, but let's be explicit)
-        keyword_ranked = sorted(range(len(keyword_rows)), key=lambda i: float(keyword_rows[i].get("keyword_score") or 0.0), reverse=True)
-        keyword_ranks = {idx: rank for rank, idx in enumerate(keyword_ranked)}
-        
-        rrf_k = 60 # Standard constant for RRF
-        scored = []
-        for i, row in enumerate(keyword_rows):
-            v_rank = vector_ranks[i]
-            k_rank = keyword_ranks[i]
-            
-            # RRF score formula
-            rrf_score = (1.0 / (rrf_k + v_rank)) + (1.0 / (rrf_k + k_rank))
-            scored.append((rrf_score, row))
+                if existing.get("embedding") is None and row.get("embedding") is not None:
+                    existing["embedding"] = row["embedding"]
+                existing["vector_score"] = row.get("vector_score", 0.0)
 
+        candidates = list(merged.values())
+        keyword_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("keyword_score") or 0.0), reverse=True)
+        vector_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("vector_score") or 0.0), reverse=True)
+        keyword_ranks = {idx: rank for rank, idx in enumerate(keyword_ranked)}
+        vector_ranks = {idx: rank for rank, idx in enumerate(vector_ranked)}
+        rrf_k = 60
+        scored = []
+        for i, row in enumerate(candidates):
+            rrf_score = (1.0 / (rrf_k + keyword_ranks[i])) + (1.0 / (rrf_k + vector_ranks[i]))
+            scored.append((rrf_score, row))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [self._row_to_chunk(row) for _, row in scored[:normalized_limit]]
 
     @staticmethod
     def _vector_similarity(v1: Sequence[float], v2_bytes: bytes | None) -> float:
-        if not v2_bytes or not v1:
+        if not v2_bytes or len(v1) == 0:
             return 0.0
         try:
             arr1 = np.asarray(v1, dtype=np.float32)
@@ -379,10 +369,13 @@ class PersistInLibsql(PersistenceAdapter):
 
         extra = (" AND " + " AND ".join(filter_clauses)) if filter_clauses else ""
 
+        safe_query = self._safe_fts_query(query)
+
         fts_sql = text(
             f"SELECT c.id, c.repo, c.branch, c.path, c.language, c.start_row, c.start_col, "
             f"c.end_row, c.end_col, c.start_bytes, c.end_bytes, c.chunk, c.embedding, "
-            f"-bm25({self._fts_table}) AS keyword_score "
+            f"-bm25({self._fts_table}) AS keyword_score, "
+            f"0.0 AS vector_score "
             f"FROM {self._fts_table} AS f "
             f"JOIN {self._table} AS c ON c.id = f.id "
             f"WHERE f.chunk MATCH :query{extra} "
@@ -399,16 +392,17 @@ class PersistInLibsql(PersistenceAdapter):
         fallback_sql = text(
             f"SELECT id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
             f"start_bytes, end_bytes, chunk, embedding, "
-            f"CASE WHEN lower(chunk) LIKE lower(:term) THEN 1 ELSE 0 END AS keyword_score "
+            f"CASE WHEN lower(chunk) LIKE lower(:term) THEN 1 ELSE 0 END AS keyword_score, "
+            f"0.0 AS vector_score "
             f"FROM {self._table} "
             f"WHERE lower(chunk) LIKE lower(:term){fallback_extra} "
             f"ORDER BY keyword_score DESC LIMIT :limit"
         )
 
         with self._engine.connect() as conn:
-            if query:
+            if safe_query:
                 try:
-                    rows = conn.execute(fts_sql, {**params, "query": query}).mappings().all()
+                    rows = conn.execute(fts_sql, {**params, "query": safe_query}).mappings().all()
                     if rows:
                         return [dict(row) for row in rows]
                 except Exception:
@@ -417,6 +411,45 @@ class PersistInLibsql(PersistenceAdapter):
             term = f"%{query}%" if query else "%"
             rows = conn.execute(fallback_sql, {**params, "term": term}).mappings().all()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _safe_fts_query(query: str) -> str:
+        terms = [part.strip() for part in re.findall(r"[A-Za-z0-9_]+", query or "") if part.strip()]
+        if not terms:
+            return ""
+        return " OR ".join(f'"{term}"' for term in terms)
+
+    def _vector_search(
+        self,
+        *,
+        query_embedding: np.ndarray,
+        limit: int,
+        repo: str | None = None,
+        branch: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        filters = []
+        if repo is not None:
+            filters.append("repo = :repo")
+            params["repo"] = repo
+        if branch is not None:
+            filters.append("branch = :branch")
+            params["branch"] = branch
+        where_clause = f" WHERE {' AND '.join(filters)}" if filters else ""
+        sql = text(
+            f"SELECT id, repo, branch, path, language, start_row, start_col, end_row, end_col, "
+            f"start_bytes, end_bytes, chunk, embedding FROM {self._table}{where_clause}"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+        scored: List[Dict[str, Any]] = []
+        for row in rows:
+            row_dict = dict(row)
+            row_dict["keyword_score"] = 0.0
+            row_dict["vector_score"] = self._vector_similarity(query_embedding, row_dict.get("embedding"))
+            scored.append(row_dict)
+        scored.sort(key=lambda item: float(item.get("vector_score") or 0.0), reverse=True)
+        return scored[:limit]
 
 
     @staticmethod

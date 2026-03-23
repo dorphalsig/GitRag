@@ -113,6 +113,32 @@ class LibsqlPersistenceTests(unittest.TestCase):
             ).scalar_one()
             self.assertEqual(fts_remaining, 0)
 
+    def test_search_includes_vector_only_candidates(self) -> None:
+        keyword_chunk = _build_chunk(self.repo, "src/keyword.py")
+        object.__setattr__(keyword_chunk, "chunk", "keywordmatch")
+        vector_chunk = _build_chunk(self.repo, "src/vector.py")
+        vec = array("f", [0.0] * 768)
+        vec[1] = 1.0
+        object.__setattr__(vector_chunk, "embeddings", vec.tobytes())
+        object.__setattr__(vector_chunk, "chunk", "different text")
+        self.adapter.persist_batch([keyword_chunk, vector_chunk])
+
+        query_vec = array("f", [0.0] * 768)
+        query_vec[1] = 1.0
+        out = self.adapter.search(query_vec, "keywordmatch", limit=2, repo=self.repo)
+
+        paths = {chunk.path for chunk in out}
+        self.assertIn("src/keyword.py", paths)
+        self.assertIn("src/vector.py", paths)
+
+    def test_search_handles_special_characters_in_fts_query(self) -> None:
+        chunk = _build_chunk(self.repo, "src/special.py")
+        self.adapter.persist_batch([chunk])
+        query_vec = array("f", [0.0] * 768)
+        query_vec[0] = 1.0
+        out = self.adapter.search(query_vec, 'foo-(bar) "baz"*', limit=1, repo=self.repo)
+        self.assertIsInstance(out, list)
+
 
 class GetIndexedPathsTests(unittest.TestCase):
     """Unit tests for PersistInLibsql.get_indexed_paths using mocks (no real DB)."""

@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 from dataclasses import asdict
 from typing import Any
+import logging
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.providers.scalekit import ScalekitProvider
 
+logger = logging.getLogger(__name__)
 
 class _RetrieverProtocol:
     def retrieve(
@@ -59,9 +61,16 @@ def create_mcp_server(
     retriever: _RetrieverProtocol,
     token_verifier: TokenVerifier | None = None,
     base_url: str | None = None,
+    require_auth: bool = True,
 ) -> FastMCP:
     """Create an authenticated MCP server with `search_code` tool."""
-    auth_provider = build_scalekit_provider(token_verifier=token_verifier, base_url=base_url)
+    auth_provider = None
+    try:
+        auth_provider = build_scalekit_provider(token_verifier=token_verifier, base_url=base_url)
+    except RuntimeError:
+        if require_auth:
+            raise
+        logger.warning("Scalekit not configured; creating MCP server without authentication")
     mcp = FastMCP(name="GitRag MCP Server", auth=auth_provider)
 
     @mcp.tool(name="search_code")
@@ -70,16 +79,24 @@ def create_mcp_server(
         top_k: int = 5,
         repo: str | None = None,
         branch: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Search indexed code and return top snippets."""
         chunks = retriever.retrieve(query, top_k=top_k, repo=repo, branch=branch)
         output: list[dict[str, Any]] = []
+        markdown_blocks: list[str] = []
         for chunk in chunks:
             payload = asdict(chunk)
             embeddings = payload.get("embeddings")
             if isinstance(embeddings, (bytes, bytearray, memoryview)):
                 payload["embeddings"] = None
+            payload["formatted"] = (
+                f'<file path="{payload.get("path")}" repo="{payload.get("repo")}" '
+                f'branch="{payload.get("branch")}">\n{payload.get("chunk", "")}\n</file>'
+            )
+            markdown_blocks.append(
+                f"### {payload.get('path')}\n\n```{payload.get('language', '')}\n{payload.get('chunk', '')}\n```"
+            )
             output.append(payload)
-        return output
+        return {"results": output, "markdown": "\n\n".join(markdown_blocks)}
 
     return mcp
