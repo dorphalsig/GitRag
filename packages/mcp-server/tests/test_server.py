@@ -11,7 +11,7 @@ import uvicorn
 from fastmcp import Client
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
-from gitrag_mcp_server.server import build_scalekit_provider, create_mcp_server
+from gitrag_mcp_server.server import _resolve_require_auth, build_scalekit_provider, create_mcp_server
 
 
 @dataclass
@@ -150,11 +150,27 @@ def test_create_server_without_scalekit_when_auth_optional(monkeypatch):
     monkeypatch.delenv("SCALEKIT_ENVIRONMENT_URL", raising=False)
     monkeypatch.delenv("SCALEKIT_CLIENT_ID", raising=False)
     monkeypatch.delenv("SCALEKIT_RESOURCE_ID", raising=False)
-    server = create_mcp_server(retriever=FakeRetriever(), require_auth=False)
+    monkeypatch.setenv("GITRAG_MCP_DISABLE_AUTH", "1")
+    server = create_mcp_server(retriever=FakeRetriever())
     assert server is not None
 
 
-def test_search_code_tool_formats_xml_safely():
+def test_disable_auth_env_takes_precedence_over_scalekit_env(scalekit_env, monkeypatch):
+    monkeypatch.setenv("GITRAG_MCP_DISABLE_AUTH", "1")
+    server = create_mcp_server(retriever=FakeRetriever(), token_verifier=StubTokenVerifier())
+    assert server.auth is None
+
+
+def test_resolve_require_auth_from_env(monkeypatch):
+    monkeypatch.setenv("GITRAG_MCP_REQUIRE_AUTH", "false")
+    assert _resolve_require_auth(None) is False
+    monkeypatch.setenv("GITRAG_MCP_REQUIRE_AUTH", "true")
+    assert _resolve_require_auth(None) is True
+    monkeypatch.setenv("GITRAG_MCP_DISABLE_AUTH", "1")
+    assert _resolve_require_auth(None) is False
+
+
+def test_search_code_tool_formats_xml_safely(monkeypatch):
     class SpecialRetriever(FakeRetriever):
         def retrieve(self, query: str, *, top_k: int = 10, repo: str | None = None, branch: str | None = None):
             return [
@@ -170,10 +186,10 @@ def test_search_code_tool_formats_xml_safely():
                 )
             ]
 
+    monkeypatch.setenv("GITRAG_MCP_DISABLE_AUTH", "true")
     mcp = create_mcp_server(
         retriever=SpecialRetriever(),
         base_url="http://127.0.0.1:8768/mcp",
-        require_auth=False,
     )
     app = mcp.http_app(path="/mcp", transport="streamable-http")
 

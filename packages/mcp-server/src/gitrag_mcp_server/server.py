@@ -13,6 +13,22 @@ from fastmcp.server.auth.providers.scalekit import ScalekitProvider
 
 logger = logging.getLogger(__name__)
 
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_require_auth(require_auth: bool | None) -> bool:
+    if require_auth is not None:
+        return require_auth
+    if _env_truthy(os.environ.get("GITRAG_MCP_DISABLE_AUTH")):
+        return False
+    configured = os.environ.get("GITRAG_MCP_REQUIRE_AUTH")
+    if configured is not None:
+        return _env_truthy(configured)
+    return True
+
+
 class _RetrieverProtocol:
     def retrieve(
         self,
@@ -62,16 +78,15 @@ def create_mcp_server(
     retriever: _RetrieverProtocol,
     token_verifier: TokenVerifier | None = None,
     base_url: str | None = None,
-    require_auth: bool = True,
+    require_auth: bool | None = None,
 ) -> FastMCP:
     """Create an authenticated MCP server with `search_code` tool."""
+    resolved_require_auth = _resolve_require_auth(require_auth)
     auth_provider = None
-    try:
+    if resolved_require_auth:
         auth_provider = build_scalekit_provider(token_verifier=token_verifier, base_url=base_url)
-    except RuntimeError:
-        if require_auth:
-            raise
-        logger.warning("Scalekit not configured; creating MCP server without authentication")
+    else:
+        logger.info("Authentication disabled for MCP server")
     mcp = FastMCP(name="GitRag MCP Server", auth=auth_provider)
 
     @mcp.tool(name="search_code")
