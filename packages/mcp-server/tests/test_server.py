@@ -155,6 +155,12 @@ def test_create_server_without_scalekit_when_auth_optional(monkeypatch):
     assert server is not None
 
 
+def test_disable_auth_env_takes_precedence_over_scalekit_env(scalekit_env, monkeypatch):
+    monkeypatch.setenv("GITRAG_MCP_DISABLE_AUTH", "1")
+    server = create_mcp_server(retriever=FakeRetriever(), token_verifier=StubTokenVerifier())
+    assert server.auth is None
+
+
 def test_resolve_require_auth_from_env(monkeypatch):
     monkeypatch.setenv("GITRAG_MCP_REQUIRE_AUTH", "false")
     assert _resolve_require_auth(None) is False

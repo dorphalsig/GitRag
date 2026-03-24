@@ -83,12 +83,10 @@ def create_mcp_server(
     """Create an authenticated MCP server with `search_code` tool."""
     resolved_require_auth = _resolve_require_auth(require_auth)
     auth_provider = None
-    try:
+    if resolved_require_auth:
         auth_provider = build_scalekit_provider(token_verifier=token_verifier, base_url=base_url)
-    except RuntimeError:
-        if resolved_require_auth:
-            raise
-        logger.warning("Scalekit not configured; creating MCP server without authentication")
+    else:
+        logger.info("Authentication disabled for MCP server")
     mcp = FastMCP(name="GitRag MCP Server", auth=auth_provider)
 
     @mcp.tool(name="search_code")
