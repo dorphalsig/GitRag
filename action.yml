@@ -43,7 +43,7 @@ runs:
     - name: Install dependencies
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: uv sync
+      run: uv sync --all-packages
       
     - name: Index Repo
       shell: bash
