@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict
+from html import escape
 from typing import Any
 import logging
 
@@ -11,6 +12,22 @@ from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.providers.scalekit import ScalekitProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_require_auth(require_auth: bool | None) -> bool:
+    if require_auth is not None:
+        return require_auth
+    if _env_truthy(os.environ.get("GITRAG_MCP_DISABLE_AUTH")):
+        return False
+    configured = os.environ.get("GITRAG_MCP_REQUIRE_AUTH")
+    if configured is not None:
+        return _env_truthy(configured)
+    return True
+
 
 class _RetrieverProtocol:
     def retrieve(
@@ -61,14 +78,15 @@ def create_mcp_server(
     retriever: _RetrieverProtocol,
     token_verifier: TokenVerifier | None = None,
     base_url: str | None = None,
-    require_auth: bool = True,
+    require_auth: bool | None = None,
 ) -> FastMCP:
     """Create an authenticated MCP server with `search_code` tool."""
+    resolved_require_auth = _resolve_require_auth(require_auth)
     auth_provider = None
     try:
         auth_provider = build_scalekit_provider(token_verifier=token_verifier, base_url=base_url)
     except RuntimeError:
-        if require_auth:
+        if resolved_require_auth:
             raise
         logger.warning("Scalekit not configured; creating MCP server without authentication")
     mcp = FastMCP(name="GitRag MCP Server", auth=auth_provider)
@@ -89,9 +107,13 @@ def create_mcp_server(
             embeddings = payload.get("embeddings")
             if isinstance(embeddings, (bytes, bytearray, memoryview)):
                 payload["embeddings"] = None
+            escaped_path = escape(str(payload.get("path", "")), quote=True)
+            escaped_repo = escape(str(payload.get("repo", "")), quote=True)
+            escaped_branch = escape(str(payload.get("branch", "")), quote=True)
+            escaped_chunk = escape(str(payload.get("chunk", "")))
             payload["formatted"] = (
-                f'<file path="{payload.get("path")}" repo="{payload.get("repo")}" '
-                f'branch="{payload.get("branch")}">\n{payload.get("chunk", "")}\n</file>'
+                f'<file path="{escaped_path}" repo="{escaped_repo}" '
+                f'branch="{escaped_branch}">\n{escaped_chunk}\n</file>'
             )
             markdown_blocks.append(
                 f"### {payload.get('path')}\n\n```{payload.get('language', '')}\n{payload.get('chunk', '')}\n```"
