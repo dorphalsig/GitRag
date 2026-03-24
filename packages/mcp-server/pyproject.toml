@@ -2,7 +2,7 @@
 name = "gitrag-mcp-server"
 version = "0.1.0"
 description = "MCP server package for GitRag"
-requires-python = ">=3.10"
+requires-python= ">=3.13"
 dependencies = [
   "gitrag-core",
   "scalekit-sdk-python==2.6.0",

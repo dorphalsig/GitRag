@@ -7,8 +7,8 @@ from unittest import mock
 import pytest
 
 import Chunker
-from Chunker.Chunk import Chunk
 import Indexer
+from Chunker.Chunk import Chunk
 
 
 class _Calc:

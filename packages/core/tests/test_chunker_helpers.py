@@ -3,10 +3,10 @@
 # No Tree-sitter needed at runtime; we stub modules only to import chunker.
 
 import json
+import random
 import sys
 import types
 import unittest
-import random
 from importlib.util import spec_from_file_location, module_from_spec
 from pathlib import Path
 

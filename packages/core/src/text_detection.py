@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Optional
-
-from magika import Magika
 
 logger = logging.getLogger(__name__)
 class BinaryDetector:

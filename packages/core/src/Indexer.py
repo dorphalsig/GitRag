@@ -36,7 +36,6 @@ from constants import (
 )
 from text_detection import BinaryDetector
 
-
 LOG4J_FORMAT = "%(asctime)s %(levelname)-5s %(name)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 

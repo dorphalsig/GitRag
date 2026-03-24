@@ -1,11 +1,11 @@
 """FastMCP server exposing secure code search via Scalekit auth."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict
 from html import escape
 from typing import Any
-import logging
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import TokenVerifier

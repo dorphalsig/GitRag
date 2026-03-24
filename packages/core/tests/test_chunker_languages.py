@@ -1,6 +1,6 @@
 import json
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 # Make src importable

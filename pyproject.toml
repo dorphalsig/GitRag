@@ -2,9 +2,7 @@
 name = "gitrag-monorepo"
 version = "0.1.0"
 description = "GitRag monorepo workspace"
-requires-python = ">=3.10"
-dependencies = []
-
+requires-python= ">=3.13"
 [tool.uv.workspace]
 members = [
   "packages/core",

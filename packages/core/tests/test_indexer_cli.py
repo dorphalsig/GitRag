@@ -3,7 +3,6 @@ import types
 import unittest
 from pathlib import Path
 from unittest import mock
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"

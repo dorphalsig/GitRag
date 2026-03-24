@@ -2,8 +2,6 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
-from Calculators.EmbeddingCalculator import EmbeddingCalculator
-
 
 @dataclass(frozen=True)
 class Chunk:

@@ -1,17 +1,18 @@
 """Hybrid retrieval orchestration with optional Qwen3 reranking."""
 from __future__ import annotations
 
-from array import array
+import logging
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, List, Optional, Protocol, Sequence
 
 import numpy as np
+from sentence_transformers import CrossEncoder
+
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker.Chunk import Chunk
 from Persistence.Persist import PersistenceAdapter
 from constants import (
-    DEFAULT_ATTN_IMPLEMENTATION,
     DEFAULT_INITIAL_RETRIEVAL_LIMIT,
     MAX_INITIAL_RETRIEVAL_LIMIT,
     DEFAULT_RERANK_TASK_INSTRUCTION,
@@ -19,6 +20,16 @@ from constants import (
     RERANK_BATCH_SIZE,
     RETRIEVAL_QUERY_PREFIX,
 )
+
+LOG4J_FORMAT = "%(asctime)s %(levelname)-5s %(name)s - %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=LOG4J_FORMAT,
+    datefmt=DATE_FORMAT
+)
+logger = logging.getLogger("indexer")
 
 class Reranker(Protocol):
     def score(self, query: str, candidates: Sequence[Chunk]) -> List[float]: ...
@@ -32,114 +43,51 @@ class Qwen3Reranker:
     """
 
     _model: Any = None
-    _tokenizer: Any = None
-    _load_error: Optional[Exception] = None
-    _loaded_model_name: Optional[str] = None
-    _loaded_attn_implementation: Optional[str] = None
-    _load_error_model_name: Optional[str] = None
-    _load_error_attn_implementation: Optional[str] = None
     _lock = Lock()
 
     def __init__(
-        self,
-        model_name: str = DEFAULT_RERANKER_MODEL,
-        task_instruction: str | None = None,
-        attn_implementation: str = DEFAULT_ATTN_IMPLEMENTATION,
+            self,
+            model_name: str = DEFAULT_RERANKER_MODEL,
+            task_instruction: str | None = None
     ) -> None:
         self._model_name = model_name
         self._task_instruction = task_instruction or DEFAULT_RERANK_TASK_INSTRUCTION
-        self._attn_implementation = attn_implementation
         self._batch_size = max(1, RERANK_BATCH_SIZE)
-        self._ensure_loaded(model_name=model_name, attn_implementation=attn_implementation)
+        self._ensure_loaded(model_name=model_name)
 
     @classmethod
-    def _ensure_loaded(
-        cls,
-        model_name: str = DEFAULT_RERANKER_MODEL,
-        attn_implementation: str = DEFAULT_ATTN_IMPLEMENTATION,
-    ) -> None:
-        if (
-            cls._model is not None
-            and cls._tokenizer is not None
-            and cls._loaded_model_name == model_name
-            and cls._loaded_attn_implementation == attn_implementation
-        ):
+    def _ensure_loaded(cls, model_name: str = DEFAULT_RERANKER_MODEL) -> None:
+        if cls._model is not None and cls._loaded_model_name == model_name:
             return
         with cls._lock:
-            if (
-                cls._model is not None
-                and cls._tokenizer is not None
-                and cls._loaded_model_name == model_name
-                and cls._loaded_attn_implementation == attn_implementation
-            ):
+            if cls._model is not None and cls._loaded_model_name == model_name:
                 return
-            if (
-                cls._load_error is not None
-                and cls._load_error_model_name == model_name
-                and cls._load_error_attn_implementation == attn_implementation
-            ):
-                raise RuntimeError("Qwen3 reranker unavailable") from cls._load_error
             try:
-                from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
-                cls._tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-                cls._model = AutoModelForSequenceClassification.from_pretrained(
+                cls._model = CrossEncoder(
                     model_name,
                     trust_remote_code=True,
-                    attn_implementation=attn_implementation,
+                    device="cpu",
+                    backend="onnx",
                 )
-                cls._model.eval()
                 cls._loaded_model_name = model_name
-                cls._loaded_attn_implementation = attn_implementation
-                cls._load_error = None
-                cls._load_error_model_name = None
-                cls._load_error_attn_implementation = None
-            except Exception as exc:  # pragma: no cover - environment-dependent
-                cls._load_error = exc
-                cls._load_error_model_name = model_name
-                cls._load_error_attn_implementation = attn_implementation
-                raise RuntimeError("Failed to load Qwen3 reranker model") from exc
+            except Exception as e:
+                logger.warning("ONNX backend failed for reranker, falling back to PyTorch: %r", e)
+                cls._model = CrossEncoder(model_name, trust_remote_code=True, device="cpu")
+                cls._loaded_model_name = model_name
 
     def score(self, query: str, candidates: Sequence[Chunk]) -> List[float]:
         if not candidates:
             return []
-        model = self.__class__._model
-        tokenizer = self.__class__._tokenizer
-        if model is None or tokenizer is None:
-            return [0.0 for _ in candidates]
-
         pairs = [
-            (
-                f"Instruct: {self._task_instruction}\nQuery: {query}",
-                candidate.chunk,
-            )
-            for candidate in candidates
+            (f"Instruct: {self._task_instruction}\nQuery: {query}", c.chunk)
+            for c in candidates
         ]
-        import torch
-
-        all_scores: list[float] = []
-        batch_size = max(1, int(getattr(self, "_batch_size", RERANK_BATCH_SIZE)))
-        for start in range(0, len(pairs), batch_size):
-            batch_pairs = pairs[start : start + batch_size]
-            encoded = tokenizer(
-                batch_pairs,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors="pt"
-            )
-            with torch.inference_mode():
-                outputs = model(**encoded)
-            logits = getattr(outputs, "logits", None)
-            if logits is None:
-                all_scores.extend([0.0 for _ in batch_pairs])
-                continue
-            flat = logits.squeeze(-1).detach().cpu().tolist()
-            if isinstance(flat, float):
-                all_scores.append(float(flat))
-            else:
-                all_scores.extend(float(v) for v in flat)
-        return all_scores
+        scores = self.__class__._model.predict(
+            pairs,
+            batch_size=self._batch_size,
+            show_progress_bar=False,
+        )
+        return [float(s) for s in scores]
 
 
 @dataclass

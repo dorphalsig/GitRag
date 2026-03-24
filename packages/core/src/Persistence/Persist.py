@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import logging
-import math
 import re
-from array import array
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
 
@@ -27,8 +25,6 @@ from constants import (
     DEFAULT_FTS_TABLE_SUFFIX,
     DEFAULT_TABLE_NAME,
     EMBEDDING_DIMENSIONS,
-    HYBRID_SEARCH_KEYWORD_WEIGHT,
-    HYBRID_SEARCH_VECTOR_WEIGHT,
 )
 from .persistence_registry import get_persistence_adapter, register_persistence_adapter
 

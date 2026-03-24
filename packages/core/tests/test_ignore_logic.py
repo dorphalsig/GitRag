@@ -1,6 +1,6 @@
+import importlib
 import os
 import sys
-import importlib
 from unittest.mock import patch
 
 # Ensure src is in path for imports
