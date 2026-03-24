@@ -152,3 +152,48 @@ def test_create_server_without_scalekit_when_auth_optional(monkeypatch):
     monkeypatch.delenv("SCALEKIT_RESOURCE_ID", raising=False)
     server = create_mcp_server(retriever=FakeRetriever(), require_auth=False)
     assert server is not None
+
+
+def test_search_code_tool_formats_xml_safely():
+    class SpecialRetriever(FakeRetriever):
+        def retrieve(self, query: str, *, top_k: int = 10, repo: str | None = None, branch: str | None = None):
+            return [
+                FakeChunk(
+                    chunk='if x < y: print("a & b")',
+                    repo='repo"1',
+                    path='src/"weird".py',
+                    language="python",
+                    start_rc=(1, 0),
+                    end_rc=(1, 10),
+                    start_bytes=0,
+                    end_bytes=10,
+                )
+            ]
+
+    mcp = create_mcp_server(
+        retriever=SpecialRetriever(),
+        base_url="http://127.0.0.1:8768/mcp",
+        require_auth=False,
+    )
+    app = mcp.http_app(path="/mcp", transport="streamable-http")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=8768, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=_run_server, args=(server,), daemon=True)
+    thread.start()
+    time.sleep(0.8)
+
+    async def _call_tool():
+        client = Client("http://127.0.0.1:8768/mcp")
+        async with client:
+            return await client.call_tool("search_code", {"query": "x"})
+
+    response = asyncio.run(_call_tool())
+    server.should_exit = True
+    thread.join(timeout=2)
+
+    assert response.is_error is False
+    formatted = response.structured_content["results"][0]["formatted"]
+    assert 'path="src/&quot;weird&quot;.py"' in formatted
+    assert 'repo="repo&quot;1"' in formatted
+    assert "if x &lt; y: print(&quot;a &amp; b&quot;)" in formatted
