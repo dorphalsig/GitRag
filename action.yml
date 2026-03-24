@@ -38,7 +38,7 @@ runs:
     - uses: astral-sh/setup-uv@v5
       with:
         enable-cache: true
-        python-version: "3.11"
+        python-version: "3.13"
 
     - name: Install dependencies
       shell: bash
