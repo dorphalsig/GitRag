@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict
+from html import escape
 from typing import Any
 import logging
 
@@ -89,9 +90,13 @@ def create_mcp_server(
             embeddings = payload.get("embeddings")
             if isinstance(embeddings, (bytes, bytearray, memoryview)):
                 payload["embeddings"] = None
+            escaped_path = escape(str(payload.get("path", "")), quote=True)
+            escaped_repo = escape(str(payload.get("repo", "")), quote=True)
+            escaped_branch = escape(str(payload.get("branch", "")), quote=True)
+            escaped_chunk = escape(str(payload.get("chunk", "")))
             payload["formatted"] = (
-                f'<file path="{payload.get("path")}" repo="{payload.get("repo")}" '
-                f'branch="{payload.get("branch")}">\n{payload.get("chunk", "")}\n</file>'
+                f'<file path="{escaped_path}" repo="{escaped_repo}" '
+                f'branch="{escaped_branch}">\n{escaped_chunk}\n</file>'
             )
             markdown_blocks.append(
                 f"### {payload.get('path')}\n\n```{payload.get('language', '')}\n{payload.get('chunk', '')}\n```"
