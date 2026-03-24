@@ -23,27 +23,29 @@ class EmbeddingCalculator:
         self._load_model()
 
     def _load_model(self) -> None:
-        """Load the Qwen3 embedding model."""
         try:
-            # Attempt ONNX if on CPU
             if self._device == "cpu" or self._device is None:
                 try:
-                    kwargs = {
-                        "model_id_or_path": EMBEDDING_MODEL_ID,
-                        "trust_remote_code": True,
-                        "device": "cpu",
-                        "backend": "onnx",
-                    }
-                    if os.path.exists(os.path.join(EMBEDDING_MODEL_ID, "model_optimized.onnx")):
-                        kwargs["model_kwargs"] = {"file_name": "model_optimized.onnx"}
-
-                    self._model = SentenceTransformer(**kwargs)
+                    self._model = SentenceTransformer(
+                        EMBEDDING_MODEL_ID,
+                        trust_remote_code=True,
+                        device="cpu",
+                        backend="onnx",
+                    )
                     logger.info("Loaded embedding model with ONNX backend")
                 except Exception as e:
-                    logger.warning("Failed to load model with ONNX backend, falling back to PyTorch: %r", e)
-                    self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device="cpu")
+                    logger.warning("ONNX backend failed, falling back to PyTorch: %r", e)
+                    self._model = SentenceTransformer(
+                        EMBEDDING_MODEL_ID,
+                        trust_remote_code=True,
+                        device="cpu",
+                    )
             elif self._device:
-                self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device=self._device)
+                self._model = SentenceTransformer(
+                    EMBEDDING_MODEL_ID,
+                    trust_remote_code=True,
+                    device=self._device,
+                )
             else:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
 
