@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "GitRag monorepo workspace"
 requires-python = ">=3.13"
 
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []          # nothing to build at the workspace root
+
 [tool.uv.workspace]
 members = [
     "packages/core",
@@ -14,11 +21,8 @@ members = [
 gitrag-core = { workspace = true }
 gitrag-mcp-server = { workspace = true }
 
-
-[tool.poetry.dependencies]
-sqlalchemy-libsql = ">=0.2.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
-    "pytest-cov>=7.1.0",
+    "pytest-cov>=7.0.0",
 ]
