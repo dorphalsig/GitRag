@@ -4,20 +4,20 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Iterable
 
 import numpy as np
 
-try:  # pragma: no cover - dependency guard for tooling envs
+try:
     from sqlalchemy import bindparam, create_engine, text
     from sqlalchemy.engine import Engine
-except ModuleNotFoundError as exc:  # pragma: no cover
-    bindparam = None  # type: ignore[assignment]
-    create_engine = None  # type: ignore[assignment]
-    text = None  # type: ignore[assignment]
-    Engine = Any  # type: ignore[assignment]
+except ModuleNotFoundError as exc:
+    bindparam = None
+    create_engine = None
+    text = None
+    Engine = Any
     SQLALCHEMY_IMPORT_ERROR = exc
-else:  # pragma: no cover - success path
+else:
     SQLALCHEMY_IMPORT_ERROR = None
 
 from Chunker.Chunk import Chunk
@@ -32,17 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 class PersistenceAdapter(Protocol):
-    def persist_batch(self, chunks: Sequence[Chunk]) -> None: ...
+    def persist_batch(self, chunks: Iterable[Chunk]) -> None: ...
 
-    def delete_batch(self, paths: List[str], repo: str | None = None) -> None: ...
+    def delete_batch(self, paths: Iterable[str], repo: str) -> None: ...
 
     def search(
-        self,
-        query_embedding: Any,
-        query_text: str,
-        limit: int = 10,
-        repo: str | None = None,
-        branch: str | None = None,
+            self,
+            query_embedding: Any,
+            query_text: str,
+            limit: int = 10,
+            repo: str | None = None,
+            branch: str | None = None,
     ) -> List[Chunk]: ...
 
     def get_indexed_paths(self, repo: str | None = None) -> set[str]:
@@ -62,12 +62,12 @@ class DBConfig:
 class LibsqlConfig(DBConfig):
     @classmethod
     def from_parts(
-        cls,
-        *,
-        database_url: str,
-        auth_token: Optional[str] = None,
-        table: str = DEFAULT_TABLE_NAME,
-        fts_table: Optional[str] = None,
+            cls,
+            *,
+            database_url: str,
+            auth_token: Optional[str] = None,
+            table: str = DEFAULT_TABLE_NAME,
+            fts_table: Optional[str] = None,
     ) -> "LibsqlConfig":
         resolved_fts = fts_table or f"{table}{DEFAULT_FTS_TABLE_SUFFIX}"
         return cls(
@@ -100,15 +100,8 @@ class LibsqlConfig(DBConfig):
 class PersistInLibsql(PersistenceAdapter):
     """Persistence adapter backed by libSQL using SQLAlchemy."""
 
-    def __init__(
-        self,
-        *,
-        cfg: DBConfig,
-        dim: int = EMBEDDING_DIMENSIONS,
-        engine: Optional[Engine] = None,
-        engine_factory: Optional[Callable[[], Engine]] = None,
-        **_: Any,
-    ) -> None:
+    def __init__(self, *, cfg: DBConfig, dim: int = EMBEDDING_DIMENSIONS, engine: Optional[Engine] = None,
+                 engine_factory: Optional[Callable[[], Engine]] = None, **_: Any, ) -> None:
         if SQLALCHEMY_IMPORT_ERROR is not None:
             raise RuntimeError("SQLAlchemy is required for libsql persistence") from SQLALCHEMY_IMPORT_ERROR
         if cfg.provider != "libsql":
@@ -126,7 +119,7 @@ class PersistInLibsql(PersistenceAdapter):
             self._owns_engine = True
         self._bootstrap()
 
-    def persist_batch(self, chunks: Sequence[Chunk]) -> None:
+    def persist_batch(self, chunks: Iterable[Chunk]) -> None:
         valid = [chunk for chunk in chunks if chunk is not None]
         if not valid:
             return
@@ -151,11 +144,11 @@ class PersistInLibsql(PersistenceAdapter):
             conn.execute(delete_fts_stmt, [{"id": p["id"]} for p in fts_params])
             conn.execute(insert_fts_stmt, fts_params)
 
-    def delete_batch(self, paths: List[str], repo: str | None = None) -> None:
+    def delete_batch(self, paths: Iterable[str], repo: str) -> None:
         if not paths:
             return
         where_clause = "path IN :paths"
-        params = {"paths": tuple(paths)}
+        params:dict[str,Any] = {"paths": tuple(paths)}
         if repo is not None:
             where_clause += " AND repo = :repo"
             params["repo"] = repo
@@ -190,14 +183,8 @@ class PersistInLibsql(PersistenceAdapter):
             if callable(dispose):  # pragma: no branch - defensive
                 dispose()
 
-    def search(
-        self,
-        query_embedding: Any,
-        query_text: str,
-        limit: int = 10,
-        repo: str | None = None,
-        branch: str | None = None,
-    ) -> List[Chunk]:
+    def search(self, query_embedding: Any, query_text: str, limit: int = 10, repo: str | None = None,
+               branch: str | None = None, ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
         query = (query_text or "").strip()
         keyword_rows = self._keyword_search(
@@ -232,8 +219,10 @@ class PersistInLibsql(PersistenceAdapter):
                 existing["vector_score"] = row.get("vector_score", 0.0)
 
         candidates = list(merged.values())
-        keyword_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("keyword_score") or 0.0), reverse=True)
-        vector_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("vector_score") or 0.0), reverse=True)
+        keyword_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("keyword_score") or 0.0),
+                                reverse=True)
+        vector_ranked = sorted(range(len(candidates)), key=lambda i: float(candidates[i].get("vector_score") or 0.0),
+                               reverse=True)
         keyword_ranks = {idx: rank for rank, idx in enumerate(keyword_ranked)}
         vector_ranks = {idx: rank for rank, idx in enumerate(vector_ranked)}
         rrf_k = 60
@@ -261,7 +250,8 @@ class PersistInLibsql(PersistenceAdapter):
         except Exception:
             return 0.0
 
-    def _chunk_params(self, chunk: Chunk) -> Dict[str, Any]:
+    @staticmethod
+    def _chunk_params(chunk: Chunk) -> Dict[str, Any]:
         start_row, start_col = chunk.start_rc
         end_row, end_col = chunk.end_rc
         return {
@@ -294,7 +284,6 @@ class PersistInLibsql(PersistenceAdapter):
             "start_bytes=excluded.start_bytes, end_bytes=excluded.end_bytes, chunk=excluded.chunk, status=excluded.status, "
             "mutation_id=excluded.mutation_id, search_vector=excluded.search_vector, embedding=excluded.embedding"
         )
-
 
     def _bootstrap(self) -> None:
         ddl = [
@@ -416,12 +405,12 @@ class PersistInLibsql(PersistenceAdapter):
         return " OR ".join(f'"{term}"' for term in terms)
 
     def _vector_search(
-        self,
-        *,
-        query_embedding: np.ndarray,
-        limit: int,
-        repo: str | None = None,
-        branch: str | None = None,
+            self,
+            *,
+            query_embedding: np.ndarray,
+            limit: int,
+            repo: str | None = None,
+            branch: str | None = None,
     ) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {}
         filters = []
@@ -447,7 +436,6 @@ class PersistInLibsql(PersistenceAdapter):
         scored.sort(key=lambda item: float(item.get("vector_score") or 0.0), reverse=True)
         return scored[:limit]
 
-
     @staticmethod
     def _row_to_chunk(row: Dict[str, Any]) -> Chunk:
         chunk_text = row.get("chunk") or ""
@@ -466,12 +454,12 @@ class PersistInLibsql(PersistenceAdapter):
 
 
 def _libsql_factory(
-    *,
-    cfg: DBConfig,
-    dim: int = EMBEDDING_DIMENSIONS,
-    engine: Optional[Engine] = None,
-    engine_factory: Optional[Callable[[], Engine]] = None,
-    **kwargs: Any,
+        *,
+        cfg: DBConfig,
+        dim: int = EMBEDDING_DIMENSIONS,
+        engine: Optional[Engine] = None,
+        engine_factory: Optional[Callable[[], Engine]] = None,
+        **kwargs: Any,
 ) -> PersistenceAdapter:
     return PersistInLibsql(
         cfg=cfg,
@@ -489,11 +477,11 @@ from . import PersistPostgres  # noqa: F401
 
 
 def create_persistence_adapter(
-    adapter: str,
-    *,
-    cfg: DBConfig,
-    dim: int = EMBEDDING_DIMENSIONS,
-    **kwargs: Any,
+        adapter: str,
+        *,
+        cfg: DBConfig,
+        dim: int = EMBEDDING_DIMENSIONS,
+        **kwargs: Any,
 ) -> PersistenceAdapter:
     key = (adapter or "libsql").strip().lower()
     factory = get_persistence_adapter(key)

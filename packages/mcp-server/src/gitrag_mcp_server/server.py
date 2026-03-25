@@ -30,21 +30,11 @@ def _resolve_require_auth(require_auth: bool | None) -> bool:
 
 
 class _RetrieverProtocol:
-    def retrieve(
-        self,
-        query: str,
-        *,
-        top_k: int = 10,
-        repo: str | None = None,
-        branch: str | None = None,
-    ) -> list[Any]: ...
+    def retrieve(self, query: str, *, top_k: int = 10, repo: str | None = None, branch: str | None = None, ) -> list[
+        Any]: ...
 
 
-def build_scalekit_provider(
-    *,
-    token_verifier: TokenVerifier | None = None,
-    base_url: str | None = None,
-) -> ScalekitProvider:
+def build_scalekit_provider(*, token_verifier: TokenVerifier | None = None, base_url: str | None = None, ) -> ScalekitProvider:
     """Construct Scalekit auth provider from environment variables."""
     environment_url = os.environ.get("SCALEKIT_ENVIRONMENT_URL")
     client_id = os.environ.get("SCALEKIT_CLIENT_ID")
@@ -73,13 +63,8 @@ def build_scalekit_provider(
     )
 
 
-def create_mcp_server(
-    *,
-    retriever: _RetrieverProtocol,
-    token_verifier: TokenVerifier | None = None,
-    base_url: str | None = None,
-    require_auth: bool | None = None,
-) -> FastMCP:
+def create_mcp_server(*, retriever: _RetrieverProtocol, token_verifier: TokenVerifier | None = None,
+                      base_url: str | None = None, require_auth: bool | None = None, ) -> FastMCP:
     """Create an authenticated MCP server with `search_code` tool."""
     resolved_require_auth = _resolve_require_auth(require_auth)
     auth_provider = None
@@ -91,10 +76,10 @@ def create_mcp_server(
 
     @mcp.tool(name="search_code")
     def search_code(
-        query: str,
-        top_k: int = 5,
-        repo: str | None = None,
-        branch: str | None = None,
+            query: str,
+            top_k: int = 5,
+            repo: str | None = None,
+            branch: str | None = None,
     ) -> dict[str, Any]:
         """Search indexed code and return top snippets."""
         chunks = retriever.retrieve(query, top_k=top_k, repo=repo, branch=branch)

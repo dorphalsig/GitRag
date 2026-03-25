@@ -2,12 +2,12 @@
 name = "gitrag-mcp-server"
 version = "0.1.0"
 description = "MCP server package for GitRag"
-requires-python= ">=3.13"
+requires-python = ">=3.13"
 dependencies = [
-  "gitrag-core",
-  "scalekit-sdk-python==2.6.0",
-  "fastmcp>=2.14.5",
-  "uvicorn>=0.40.0",
+    "gitrag-core",
+    "scalekit-sdk-python==2.6.1",
+    "fastmcp>=2.14.5",
+    "uvicorn>=0.40.0",
 ]
 
 [build-system]
@@ -15,13 +15,10 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.uv.sources]
-gitrag-core = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "../core/src"]

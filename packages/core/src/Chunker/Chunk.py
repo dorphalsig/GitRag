@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
 
-@dataclass(frozen=True)
+@dataclass
 class Chunk:
     chunk: str
     repo: str

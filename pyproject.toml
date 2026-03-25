@@ -2,19 +2,23 @@
 name = "gitrag-monorepo"
 version = "0.1.0"
 description = "GitRag monorepo workspace"
-requires-python= ">=3.13"
+requires-python = ">=3.13"
+
 [tool.uv.workspace]
 members = [
-  "packages/core",
-  "packages/mcp-server",
+    "packages/core",
+    "packages/mcp-server",
 ]
 
 [tool.uv.sources]
 gitrag-core = { workspace = true }
 gitrag-mcp-server = { workspace = true }
 
+
+[tool.poetry.dependencies]
+sqlalchemy-libsql = ">=0.2.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
-    "pytest-cov>=7.0.0",
+    "pytest-cov>=7.1.0",
 ]

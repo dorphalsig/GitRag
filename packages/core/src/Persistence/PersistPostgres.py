@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from array import array
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Iterable
 
 import numpy as np
 from pgvector.sqlalchemy import Vector
@@ -100,7 +100,7 @@ class PersistInPostgres(PersistenceAdapter):
             "mutation_id=excluded.mutation_id, embedding=excluded.embedding, search_vector=excluded.search_vector"
         )
 
-    def persist_batch(self, chunks: Sequence[Chunk]) -> None:
+    def persist_batch(self, chunks: Iterable[Chunk]) -> None:
         valid = [chunk for chunk in chunks if chunk is not None]
         if not valid:
             return
@@ -133,11 +133,11 @@ class PersistInPostgres(PersistenceAdapter):
                     },
                 )
 
-    def delete_batch(self, paths: List[str], repo: str | None = None) -> None:
+    def delete_batch(self, paths: Iterable[str], repo: str) -> None:
         if not paths:
             return
         where_clause = "path IN :paths"
-        params = {"paths": tuple(paths)}
+        params:dict[str,Any] = {"paths": tuple(paths)}
         if repo is not None:
             where_clause += " AND repo = :repo"
             params["repo"] = repo
@@ -148,22 +148,16 @@ class PersistInPostgres(PersistenceAdapter):
         with self._engine.begin() as conn:
             conn.execute(delete_stmt, params)
 
-    def search(
-        self,
-        query_embedding: Any,
-        query_text: str,
-        limit: int = 10,
-        repo: str | None = None,
-        branch: str | None = None,
-    ) -> List[Chunk]:
+    def search(self, query_embedding: Any, query_text: str, limit: int = 10, repo: str | None = None,
+               branch: str | None = None, ) -> List[Chunk]:
         normalized_limit = max(1, int(limit))
         query = (query_text or "").strip()
-        
+
         # We use a CTE approach for true hybrid search: 
         # 1. Fetch top candidates by vector similarity.
         # 2. Fetch top candidates by keyword (FTS).
         # 3. Combine and rerank them using the hybrid scoring formula.
-        
+
         common_filters = []
         params: Dict[str, Any] = {
             "query_embedding": query_embedding,
@@ -174,16 +168,16 @@ class PersistInPostgres(PersistenceAdapter):
             "vector_weight": HYBRID_SEARCH_VECTOR_WEIGHT,
             "keyword_weight": HYBRID_SEARCH_KEYWORD_WEIGHT,
         }
-        
+
         if repo is not None:
             common_filters.append("repo = :repo")
             params["repo"] = repo
         if branch is not None:
             common_filters.append("branch = :branch")
             params["branch"] = branch
-            
+
         where_clause = (" WHERE " + " AND ".join(common_filters)) if common_filters else ""
-        
+
         sql = text(
             f"""
             WITH vector_candidates AS (
@@ -241,7 +235,7 @@ class PersistInPostgres(PersistenceAdapter):
                 rows = conn.execute(fallback_sql, params).mappings().all()
             else:
                 rows = conn.execute(sql, params).mappings().all()
-                
+
         return [self._row_to_chunk(dict(row)) for row in rows]
 
     def get_indexed_paths(self, repo: str | None = None) -> set[str]:

@@ -1,10 +1,10 @@
 import logging
-from typing import Optional
+from typing import Optional, Iterable
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_BATCH_SIZE, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +74,22 @@ class EmbeddingCalculator:
             )
         return arr.tobytes()
 
-    def calculate_batch(self, chunks: list[str]) -> list[bytes]:
+    def calculate_batch(self, chunks: Iterable[str]) -> Iterable[bytes]:
         assert self._model is not None
-        if not chunks:
-            return []
-        batch_size = max(1, min(EMBEDDING_BATCH_SIZE, len(chunks)))
-        results: list[bytes] = []
-        for start in range(0, len(chunks), batch_size):
-            window = chunks[start : start + batch_size]
-            vecs = self._model.encode(
-                window,
-                normalize_embeddings=True,
-                batch_size=batch_size,
-                show_progress_bar=False,
+        materialized_chunks = list(chunks)
+        if not materialized_chunks: return []
+
+        vecs = self._model.encode(
+            materialized_chunks,
+            batch_size=len(materialized_chunks),
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+
+        if vecs[0].shape[0] != EMBEDDING_DIMENSIONS:
+            raise ValueError(
+                f"Unexpected embedding dimension {vecs[0].shape[0]} for {EMBEDDING_MODEL_ID}; "
+                f"expected {EMBEDDING_DIMENSIONS}"
             )
-            for vec in vecs:
-                arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-                if arr.shape[0] != EMBEDDING_DIMENSIONS:
-                    raise ValueError(f"Unexpected embedding dimension {arr.shape[0]}")
-                results.append(arr.tobytes())
-        return results
+
+        return map(lambda x: np.asarray(x, dtype=np.float32).reshape(-1), vecs)

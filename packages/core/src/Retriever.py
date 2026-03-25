@@ -31,6 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("indexer")
 
+
 class Reranker(Protocol):
     def score(self, query: str, candidates: Sequence[Chunk]) -> List[float]: ...
 
@@ -97,14 +98,8 @@ class Retriever:
     reranker: Optional[Reranker] = None
     initial_limit: int = DEFAULT_INITIAL_RETRIEVAL_LIMIT
 
-    def retrieve(
-        self,
-        query: str,
-        *,
-        top_k: int = 10,
-        repo: str | None = None,
-        branch: str | None = None,
-    ) -> List[Chunk]:
+    def retrieve(self, query: str, *, top_k: int = 10, repo: str | None = None, branch: str | None = None, ) \
+            -> List[Chunk]:
         normalized_query = (query or "").strip()
         if not normalized_query:
             return []
