@@ -1,13 +1,20 @@
 """Hybrid retrieval orchestration with optional Qwen3 reranking."""
 from __future__ import annotations
 
+import argparse
+import json
+import logging
+import os
+import sys
+import numpy as np
 from array import array
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from threading import Lock
-from typing import Any, List, Optional, Protocol, Sequence
+from typing import Any, List, Optional, Protocol, Sequence, Tuple
 
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker.Chunk import Chunk
+from ComponentLoader import load_components
 from Persistence.Persist import PersistenceAdapter
 from constants import (
     DEFAULT_ATTN_IMPLEMENTATION,
@@ -76,15 +83,21 @@ class Qwen3Reranker:
             ):
                 raise RuntimeError("Qwen3 reranker unavailable") from cls._load_error
             try:
-                from transformers import AutoModelForSequenceClassification, AutoTokenizer
+                backend = os.getenv("RETRIEVAL_OPTIMIZER", "torch").lower()
+                if backend == "onnx":
+                    from sentence_transformers import CrossEncoder
+                    cls._model = CrossEncoder(model_name, trust_remote_code=True, backend="onnx")
+                    cls._tokenizer = cls._model.tokenizer
+                else:
+                    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-                cls._tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-                cls._model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    trust_remote_code=True,
-                    attn_implementation=attn_implementation,
-                )
-                cls._model.eval()
+                    cls._tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+                    cls._model = AutoModelForSequenceClassification.from_pretrained(
+                        model_name,
+                        trust_remote_code=True,
+                        attn_implementation=attn_implementation,
+                    )
+                    cls._model.eval()
                 cls._loaded_model_name = model_name
                 cls._loaded_attn_implementation = attn_implementation
                 cls._load_error = None
@@ -111,6 +124,16 @@ class Qwen3Reranker:
             )
             for candidate in candidates
         ]
+        try:
+            from sentence_transformers import CrossEncoder
+            if isinstance(model, CrossEncoder):
+                preds = model.predict(pairs)
+                if isinstance(preds, (float, np.float32, np.float64, int)):
+                    return [float(preds)]
+                return [float(v) for v in preds]
+        except ImportError:
+            pass
+
         encoded = tokenizer(pairs, padding=True, truncation=True, return_tensors="pt")
         import torch
 
@@ -174,3 +197,56 @@ class Retriever:
         vals = array("f")
         vals.frombytes(raw)
         return list(vals)
+
+
+def main() -> None:
+    """CLI entrypoint."""
+    parser = argparse.ArgumentParser(description="Query the retrieval pipeline.")
+    parser.add_argument("query", nargs="?", help="The search query.")
+    parser.add_argument("--repo", help="Optional repository filter.")
+    parser.add_argument("--branch", help="Optional branch filter.")
+    parser.add_argument("--top-k", type=int, default=10, help="Number of results to return.")
+    parser.add_argument("--server", action="store_true", help="Start the MCP server (SSE).")
+    parser.add_argument("--port", type=int, default=7860, help="Port for the MCP server.")
+    parser.add_argument("--host", default="0.0.0.0", help="Host for the MCP server.")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logger = logging.getLogger("retriever")
+
+    if not args.server and not args.query:
+        parser.print_help()
+        sys.exit(1)
+
+    calc, persist = load_components(args.repo)
+    reranker = Qwen3Reranker()
+    retriever = Retriever(persist, calc, reranker=reranker)
+
+    if args.server:
+        logger.info("Starting MCP Server on %s:%d", args.host, args.port)
+        try:
+            from gitrag_mcp_server.server import create_mcp_server
+        except ImportError as e:
+            logger.error("Failed to import MCP server: %s", e)
+            sys.exit(1)
+
+        mcp = create_mcp_server(retriever=retriever)
+        mcp.run(transport="sse", port=args.port, host=args.host)
+        return
+
+    if not args.query:
+        parser.print_help()
+        sys.exit(1)
+
+    results = retriever.retrieve(args.query, top_k=args.top_k, repo=args.repo, branch=args.branch)
+    output = []
+    for chunk in results:
+        payload = asdict(chunk)
+        if "embeddings" in payload:
+            payload["embeddings"] = None
+        output.append(payload)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

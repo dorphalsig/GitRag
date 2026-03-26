@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -24,7 +25,11 @@ class EmbeddingCalculator:
     def _load_model(self) -> None:
         """Load the Qwen3 embedding model."""
         try:
-            if self._device:
+            backend = os.getenv("RETRIEVAL_OPTIMIZER", "torch").lower()
+            if backend == "onnx":
+                logger.info("Loading embedding model with ONNX backend: %s", EMBEDDING_MODEL_ID)
+                self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, backend="onnx")
+            elif self._device:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True, device=self._device)
             else:
                 self._model = SentenceTransformer(EMBEDDING_MODEL_ID, trust_remote_code=True)
