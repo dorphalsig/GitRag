@@ -9,8 +9,7 @@ from Indexer import main
 def test_main_full_indexing(temp_git_repo, monkeypatch, mock_calc, mock_persist, patch_env):
     monkeypatch.chdir(temp_git_repo)
 
-    with patch("Indexer.EmbeddingCalculator", return_value=mock_calc), \
-         patch("Indexer.create_persistence_adapter", return_value=mock_persist), \
+    with patch("Indexer.load_components", return_value=(mock_calc, mock_persist)), \
          patch("Indexer.chunker.chunk_file") as mock_chunk:
 
         mock_chunk_obj = MagicMock()
@@ -42,8 +41,7 @@ def test_main_delta_indexing(temp_git_repo, monkeypatch, mock_calc, mock_persist
     subprocess.run(["git", "add", "new.txt"], check=True)
     subprocess.run(["git", "commit", "-m", "add new.txt"], check=True)
 
-    with patch("Indexer.EmbeddingCalculator", return_value=mock_calc), \
-         patch("Indexer.create_persistence_adapter", return_value=mock_persist), \
+    with patch("Indexer.load_components", return_value=(mock_calc, mock_persist)), \
          patch("Indexer.chunker.chunk_file") as mock_chunk:
 
         mock_chunk_obj = MagicMock()
@@ -64,8 +62,7 @@ def test_main_delta_indexing(temp_git_repo, monkeypatch, mock_calc, mock_persist
 def test_main_error_handling(temp_git_repo, monkeypatch, mock_calc, mock_persist, patch_env):
     monkeypatch.chdir(temp_git_repo)
 
-    with patch("Indexer.EmbeddingCalculator", return_value=mock_calc), \
-         patch("Indexer.create_persistence_adapter", return_value=mock_persist), \
+    with patch("Indexer.load_components", return_value=(mock_calc, mock_persist)), \
          patch("Indexer.chunker.chunk_file", side_effect=Exception("Chunking failed")):
 
         monkeypatch.setattr("sys.argv", ["indexer", "test-repo", "--full"])
