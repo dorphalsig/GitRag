@@ -15,6 +15,7 @@ dependencies = [
   "sqlalchemy-libsql>=0.2.0",
   "psycopg2-binary>=2.9.11",
   "pgvector>=0.4.2",
+  "magika>=1.0.2",
 ]
 
 [build-system]
@@ -25,3 +26,8 @@ build-backend = "setuptools.build_meta"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--cov=src --cov-report=term-missing"
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]

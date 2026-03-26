@@ -1,0 +1,4 @@
+id,name,role,requirement
+1,Alice,Admin,The system shall log events for auditing.
+2,Bob,User,The application must validate user input.
+3,Charlie,Guest,This string is exceedingly long to test size splits. Padding: [XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX] Padding: [XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX]

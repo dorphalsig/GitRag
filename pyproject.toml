@@ -3,7 +3,7 @@ name = "gitrag-monorepo"
 version = "0.1.0"
 description = "GitRag monorepo workspace"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["libsql-experimental (>=0.0.55,<0.0.56)", "sqlalchemy-libsql (>=0.2.0,<0.3.0)"]
 
 [tool.uv.workspace]
 members = [

@@ -92,9 +92,9 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
 
     Behavior:
         - Runs: git diff --name-status --find-renames -z <from>..<to>
-        - With -z, each record is NUL-terminated; within a record, status and first path are tab-separated.
-        - Renames/Copies (R*/C*): record encodes "STATUS<TAB>old", and the next NUL token is "new".
-          We treat them as DELETE(old) + PROCESS(new).
+        - With -z, each token is NUL-terminated.
+        - Renames/Copies (R*/C*): STATUS, OLD_PATH, NEW_PATH.
+        - Everything else: STATUS, PATH.
         - 'D' → DELETE; everything else → PROCESS.
 
     Outputs:
@@ -113,27 +113,24 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
 
     i = 0
     while i < len(tokens):
-        rec = tokens[i]
-        tab = rec.find("\t")
-        if tab < 0:
-            logger.debug("Skipping malformed name-status record (no tab): %r", rec)
-            i += 1
-            continue
+        status = tokens[i]
+        if i + 1 >= len(tokens):
+            logger.debug("Malformed diff record (no path): %r", status)
+            break
 
-        status = rec[:tab]
-        path1 = rec[tab + 1:]
+        path1 = tokens[i + 1]
 
         if status.startswith(("R", "C")):
-            if i + 1 < len(tokens):
-                old_path, new_path = path1, tokens[i + 1]
+            if i + 2 < len(tokens):
+                old_path, new_path = path1, tokens[i + 2]
                 to_delete.add(old_path)
                 to_process.add(new_path)
                 actions.append({"action": "delete", "path": old_path, "reason": "rename/copy"})
                 actions.append({"action": "process", "path": new_path, "reason": "rename/copy"})
-                i += 2
+                i += 3
             else:
-                logger.debug("Rename/copy record missing new path: %r", rec)
-                i += 1
+                logger.debug("Rename/copy record missing new path: %r", status)
+                i += 2
             continue
 
         if status == "D":
@@ -142,7 +139,7 @@ def _collect_changes(rng: Tuple[str, str]) -> Tuple[Set[str], Set[str], List[Dic
         else:
             to_process.add(path1)
             actions.append({"action": "process", "path": path1, "reason": f"status={status}"})
-        i += 1
+        i += 2
 
     return to_process, to_delete, actions
 
@@ -152,7 +149,7 @@ def _filter_text_files(paths: Set[str], detector: BinaryDetector | None = None) 
     if not paths:
         return set()
 
-    detector = detector or BinaryDetector(_run_git)
+    detector = detector or BinaryDetector()
     text: Set[str] = set()
     for p in sorted(paths):
         try:
@@ -292,7 +289,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    detector = BinaryDetector(_run_git)
+    detector = BinaryDetector()
     logger.info("Starting indexer for repo=%s branch=%s", args.repo, args.branch or "<none>")
 
     if args.full:
