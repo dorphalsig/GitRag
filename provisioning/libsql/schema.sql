@@ -26,6 +26,6 @@ CREATE INDEX IF NOT EXISTS chunks_path_idx ON chunks (path);
 CREATE INDEX IF NOT EXISTS chunks_repo_path_idx ON chunks (repo, path);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  id,
+  id UNINDEXED,
   chunk
 );
