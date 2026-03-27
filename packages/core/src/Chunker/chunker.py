@@ -170,7 +170,19 @@ def _chunk_non_code(
 
     # Whole-file small case: emit a single chunk from the **original contents** and stop.
     if (root.end_byte - root.start_byte) < SOFT_MAX_BYTES:
-        return [_make_chunk(contents, root.start_byte, root.end_byte, path, language, repo, mapper, branch=branch)]
+        return [
+            _make_chunk(
+                contents,
+                root.start_byte,
+                root.end_byte,
+                path,
+                language,
+                repo,
+                mapper,
+                metadata={"chunk_kind": "text"},
+                branch=branch,
+            )
+        ]
 
     base = _first_multi_child_level(root)
     siblings = list(base.named_children)
@@ -182,7 +194,17 @@ def _chunk_non_code(
         return _chunk_fallback(contents, path, language, repo, mapper, branch=branch)
 
     return [
-        _make_chunk(contents, s, e, path, language, repo, mapper, branch=branch)
+        _make_chunk(
+            contents,
+            s,
+            e,
+            path,
+            language,
+            repo,
+            mapper,
+            metadata={"chunk_kind": "text"},
+            branch=branch,
+        )
         for (s, e) in _stitch_full_coverage(contents, groups, mapper)
     ]
 
@@ -233,7 +255,20 @@ def _chunk_fallback(
 
     overlap = int(FALLBACK_OVERLAP_RATIO * SOFT_MAX_BYTES)
     ranges = _newline_aligned_ranges(contents, 0, len(contents), mapper, overlap=overlap)
-    return [_make_chunk(contents, s, e, path, language, repo, mapper, branch=branch) for s, e in ranges]
+    return [
+        _make_chunk(
+            contents,
+            s,
+            e,
+            path,
+            language,
+            repo,
+            mapper,
+            metadata={"chunk_kind": "text"},
+            branch=branch,
+        )
+        for s, e in ranges
+    ]
 
 
 def _chunk_document(
@@ -760,7 +795,7 @@ def _parse_markdown_blocks(ctx: DocContext) -> List[DocBlock]:
             fence_char = fence_marker[0]
             fence_len = len(fence_marker)
             escaped = re.escape(fence_char)
-            closing = re.compile("^" + escaped + "{" + str(fence_len) + ",}\\s*$")
+            closing = re.compile("^" + escaped + "{" + str(fence_len) + ",}s*$")
             j = i + 1
             end_char = start_char + len(line)
             while j < total:
@@ -1356,6 +1391,11 @@ def _collect_query_matches(
         if primary is not None:
             matches.append((primary, grouped))
     return matches
+
+
+def _query_matches(root: Node, language: str, sexprs: list[str], capture: str):
+    """Return (node, {}) pairs for each captured node — for correctness tests."""
+    return [(_node, {}) for _node in _query_nodes(root, language, sexprs, capture)]
 
 
 def _unique_by_span(nodes: List[Node]) -> List[Node]:

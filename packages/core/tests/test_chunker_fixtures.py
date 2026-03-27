@@ -56,3 +56,23 @@ def test_chunk_java_fixture_returns_chunks():
     chunks = chunker.chunk_file(str(FIXTURES / "fixture.java"), "repo")
     assert chunks
     assert any(chunk.language == "java" for chunk in chunks)
+
+
+def test_chunk_markdown_fixture_keeps_heading_context():
+    chunks = chunker.chunk_file(str(FIXTURES / "fixture.md"), "repo")
+    assert chunks
+    assert any(chunk.metadata.get("heading_breadcrumb") for chunk in chunks)
+    assert any("Introduction" in chunk.chunk for chunk in chunks)
+
+
+def test_chunk_jsonl_fixture_emits_line_based_signatures():
+    chunks = chunker.chunk_file(str(FIXTURES / "fixture.jsonl"), "repo")
+    assert chunks
+    assert all(chunk.language == "jsonl" for chunk in chunks)
+    assert any("line 1" in chunk.signature.lower() for chunk in chunks)
+
+
+def test_chunk_tsv_fixture_preserves_header_in_signature():
+    chunks = chunker.chunk_file(str(FIXTURES / "fixture.tsv"), "repo")
+    assert chunks
+    assert any("requirement" in chunk.signature.lower() for chunk in chunks)
