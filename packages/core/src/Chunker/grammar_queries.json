@@ -185,7 +185,7 @@
       "csharp": ["(property_declaration) @accessor", "(indexer_declaration) @accessor"],
       "python": ["(decorated_definition (decorator (identifier) @_name (#eq? @_name \"property\")) definition: (function_definition) @accessor)"],
       "javascript": [
-        "(pair key: (property_identifier) @name value: (function_expression)) @method"
+        "(method_definition) @accessor"
       ],
       "ruby": ["(alias) @accessor"]
     },
