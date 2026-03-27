@@ -1402,7 +1402,16 @@ def _build_method_like_chunks(
         signature = _fqn_for_node(node, contents, path, language, pkg)
         return [
             _make_chunk(
-                contents, unit_start, unit_end, path, language, repo, mapper, signature=signature, branch=branch
+                contents,
+                unit_start,
+                unit_end,
+                path,
+                language,
+                repo,
+                mapper,
+                signature=signature,
+                metadata={"chunk_kind": "method"},
+                branch=branch,
             )
         ]
 
@@ -1432,6 +1441,7 @@ def _build_method_like_chunks(
                 repo,
                 mapper,
                 signature=(f"{fqn}#part{i + 1}" if len(parts) > 1 else fqn),
+                metadata={"chunk_kind": "method"},
                 branch=branch,
             )
         )
@@ -1506,6 +1516,7 @@ def _build_class_metadata_chunk(
         start_bytes=t_start,
         end_bytes=t_end,
         signature=(f"{pkg}.{type_name}#metadata" if pkg else f"{type_name}#metadata"),
+        metadata={"chunk_kind": "class_metadata"},
     )
 
 
