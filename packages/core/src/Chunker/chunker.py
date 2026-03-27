@@ -1245,53 +1245,44 @@ except ImportError:  # pragma: no cover - fallback for older runtimes
 
 
 def _query_nodes(root: Node, language: str, sexprs: list[str], capture: str):
-    """
-    Execute `sexprs` as a Tree-sitter Query and return nodes captured as `@{capture}`.
-    """
+    """Execute `sexprs` as a Tree-sitter Query and return nodes captured as `@{capture}`."""
     if not sexprs:
         return []
-
     try:
         lang = get_language(language)
-        qsrc = "\n".join(s.strip() for s in sexprs if s.strip())
-        query = Query(lang, qsrc)
-    except QueryError as exc:
-        logger.error("Tree-sitter query failed for language '%s': %s", language, exc)
+    except Exception as exc:
+        logger.error("Failed to load Tree-sitter language '%s': %s", language, exc)
         return []
-
-    captures_nodes: List[Node] = []
-    if QueryCursor is not None:
-        cursor = QueryCursor()
-        cursor.exec(query, root)
-        for entry in cursor.captures():
-            if isinstance(entry, tuple):
-                node, cap_name = entry[0], entry[1] if len(entry) > 1 else None
-                if cap_name == capture:
-                    captures_nodes.append(node)
-    else:
-        captures = query.captures(root)
-        if isinstance(captures, dict):  # older python bindings return {capture: [nodes]}
-            captures_nodes.extend(captures.get(capture, []))
+    nodes: List[Node] = []
+    for qsrc in _query_variants(sexprs, language):
+        try:
+            query = Query(lang, qsrc)
+        except QueryError as exc:
+            logger.error("Tree-sitter query failed for language '%s': %s", language, exc)
+            continue
+        if QueryCursor is not None:
+            cursor = QueryCursor(query)
+            raw = cursor.captures(root)
         else:
-            for entry in captures:
+            raw = query.captures(root)
+        if isinstance(raw, dict):
+            nodes.extend(raw.get(capture, []))
+        else:
+            for entry in raw:
                 if not isinstance(entry, tuple):
                     continue
                 node = entry[0]
                 cap_name = entry[1] if len(entry) > 1 else None
                 if cap_name == capture:
-                    captures_nodes.append(node)
-
-    nodes = list(captures_nodes)
-
-    # (optional) ensure deterministic order & dedupe by byte range
+                    nodes.append(node)
     nodes.sort(key=lambda n: (n.start_byte, n.end_byte))
-    deduped = []
-    seen = set()
-    for n in nodes:
-        key = (n.start_byte, n.end_byte)
+    deduped: List[Node] = []
+    seen: set[tuple[int, int]] = set()
+    for node in nodes:
+        key = (node.start_byte, node.end_byte)
         if key not in seen:
             seen.add(key)
-            deduped.append(n)
+            deduped.append(node)
     return deduped
 
 
