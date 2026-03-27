@@ -34,7 +34,11 @@ const myArrow = () => {
 
 const myObjectLiteral = {
     /** Captures 'pair' with 'function_expression' (Accessor -> @method). */
-    myKey: function() { 
-        return 3; 
+    get myAccessor() {
+        return 3;
+    },
+    myKey: function() {
+        return 4;
     }
+}
 };
