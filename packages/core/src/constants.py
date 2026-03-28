@@ -5,6 +5,7 @@ import os
 EMBEDDING_MODEL_ID = os.getenv("MODEL", "Qwen/Qwen3-Embedding-0.6B")
 EMBEDDING_DIMENSIONS = int(os.getenv("DIMENSIONS", 1_024))
 EMBEDDING_BATCH_SIZE = int(os.getenv("BATCH_SIZE", 64))
+EMBEDDING_BACKEND = os.getenv("BACKEND", "openvino")
 SOFT_TIMEOUT_SECONDS = int(os.getenv("SOFT_TIMEOUT", 0))
 EXIT_CODE_TIMEOUT = 75
 

@@ -18,7 +18,7 @@ from constants import (
     DEFAULT_RERANK_TASK_INSTRUCTION,
     DEFAULT_RERANKER_MODEL,
     RERANK_BATCH_SIZE,
-    RETRIEVAL_QUERY_PREFIX,
+    RETRIEVAL_QUERY_PREFIX, EMBEDDING_BACKEND,
 )
 
 LOG4J_FORMAT = "%(asctime)s %(levelname)-5s %(name)s - %(message)s"
@@ -68,11 +68,11 @@ class Qwen3Reranker:
                     model_name,
                     trust_remote_code=True,
                     device="cpu",
-                    backend="onnx",
+                    backend=EMBEDDING_BACKEND,
                 )
                 cls._loaded_model_name = model_name
             except Exception as e:
-                logger.warning("ONNX backend failed for reranker, falling back to PyTorch: %r", e)
+                logger.warning("ONNX/OPENVINO backend failed for reranker, falling back to PyTorch: %r", e)
                 cls._model = CrossEncoder(model_name, trust_remote_code=True, device="cpu")
                 cls._loaded_model_name = model_name
 

@@ -70,7 +70,7 @@ def test_load_components(mock_resolve, mock_create_persist, mock_calc_class):
 
     mock_persist = mock_create_persist.return_value
 
-    calc, persist = load_components("test-repo")
+    calc, persist = load_components()
 
     assert calc == mock_calc
     assert persist == mock_persist

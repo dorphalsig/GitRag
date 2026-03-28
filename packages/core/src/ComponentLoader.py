@@ -35,7 +35,7 @@ def resolve_db_cfg() -> DBConfig:
 
     return DBConfig(provider=provider, url=database_url, auth_token=auth_token, table_map={})
 
-def load_components(repo: Optional[str] = None) -> Tuple[EmbeddingCalculator, PersistenceAdapter]:
+def load_components() -> Tuple[EmbeddingCalculator, PersistenceAdapter]:
     """Initialize the embedding calculator and persistence layer."""
     calc = EmbeddingCalculator()
     cfg = resolve_db_cfg()

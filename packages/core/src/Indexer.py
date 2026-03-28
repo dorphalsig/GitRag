@@ -12,11 +12,11 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import more_itertools
 import pathspec
 
+import ComponentLoader
 import text_detection
-from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
-from Persistence.Persist import (DBConfig, LibsqlConfig, create_persistence_adapter)
+from Persistence.Persist import (DBConfig, LibsqlConfig)
 from constants import (EMBEDDING_BATCH_SIZE, EXIT_CODE_TIMEOUT,
                        SOFT_TIMEOUT_SECONDS)
 
@@ -44,28 +44,18 @@ class IndexingResult:
 
 
 class Indexer:
-    calculator = EmbeddingCalculator()
+    # calculator = EmbeddingCalculator()
 
-    def __init__(
-        self,
-        repo: str,
-        branch: str,
-        from_sha: str,
-        to_sha: str,
-        is_full: bool = False,
-    ):
+    def __init__(self, repo: str, branch: str, from_sha: str, to_sha: str, is_full: bool = False, ):
         self.repo = repo
         self.branch = branch
         self.is_full = is_full
-        cfg = _resolve_db_cfg()
-        self.db = create_persistence_adapter(cfg.provider, cfg=cfg)
+        self.calculator, self.db = ComponentLoader.load_components()
         self.sha0, self.sha1 = self._resolve_range(from_sha, to_sha, is_full)
         self.start_time = time.time()
 
     def _check_timeout(self):
-        if SOFT_TIMEOUT_SECONDS > 0 and (
-            time.time() - self.start_time > SOFT_TIMEOUT_SECONDS
-        ):
+        if SOFT_TIMEOUT_SECONDS > 0 and (time.time() - self.start_time > SOFT_TIMEOUT_SECONDS):
             logger.error("Indexing exceeded soft timeout of %ds", SOFT_TIMEOUT_SECONDS)
             sys.exit(EXIT_CODE_TIMEOUT)
 
@@ -79,7 +69,7 @@ class Indexer:
     def _iter_git_changes(self) -> Tuple[List[str], List[str]]:
         to_process = []
         to_delete = []
-        sha0,sha1 = self._resolve_range(self.sha0, self.sha1, self.is_full)
+        sha0, sha1 = self._resolve_range(self.sha0, self.sha1, self.is_full)
         cmd = ["diff", "--name-status", "--no-renames", "-z", f"{sha0}..{sha1}"]
         stdout = self._run_git(cmd)
 
@@ -173,7 +163,6 @@ class Indexer:
             )
 
         return result
-
 
     def _run_git(self, args: List[str]) -> str:
         cmd = ["git", "-c", "core.quotePath=false", *args]

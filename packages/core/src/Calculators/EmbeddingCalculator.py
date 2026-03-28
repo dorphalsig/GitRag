@@ -4,7 +4,7 @@ from typing import Optional, Iterable
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID
+from constants import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL_ID, EMBEDDING_BACKEND
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +29,11 @@ class EmbeddingCalculator:
                         EMBEDDING_MODEL_ID,
                         trust_remote_code=True,
                         device="cpu",
-                        backend="onnx",
+                        backend=EMBEDDING_BACKEND,
                     )
                     logger.info("Loaded embedding model with ONNX backend")
                 except Exception as e:
-                    logger.warning("ONNX backend failed, falling back to PyTorch: %r", e)
+                    logger.warning(f"{EMBEDDING_BACKEND} backend failed, falling back to PyTorch: %r", e)
                     self._model = SentenceTransformer(
                         EMBEDDING_MODEL_ID,
                         trust_remote_code=True,
