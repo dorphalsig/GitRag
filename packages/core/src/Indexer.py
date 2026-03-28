@@ -1,38 +1,26 @@
-#!/usr/bin/env python3
-"""
-Indexer.py — Simplified and robust orchestrator.
-
-Behavior:
-- Uses one git-diff-based selection path for both delta and full runs.
-- Lazy iteration for file selection and chunking.
-- Multi-batch file buffering: persists only complete files.
-- Timeout gate before each embedding batch.
-- Returns exit code 75 on timeout.
-"""
-from __future__ import annotations
-
 import argparse
 import itertools
 import logging
 import os
+import shlex
 import subprocess
+import sys
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
+import more_itertools
 import pathspec
-from more_itertools import batched
-
-import text_detection
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
-from Persistence.Persist import DBConfig, LibsqlConfig, create_persistence_adapter
-from constants import (
-    DEFAULT_DB_PROVIDER, DEFAULT_TABLE_NAME, EMBEDDING_BATCH_SIZE, EXIT_CODE_TIMEOUT, SOFT_TIMEOUT_SECONDS, )
+from Persistence.Persist import (DBConfig, LibsqlConfig, PersistenceAdapter,
+                                 create_persistence_adapter)
+from constants import (EMBEDDING_BATCH_SIZE, EXIT_CODE_TIMEOUT,
+                       SOFT_TIMEOUT_SECONDS)
+import text_detection
 
-LOG4J_FORMAT = "%(asctime)s %(levelname)-5s %(name)s - %(message)s"
+LOG4J_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 logging.basicConfig(
@@ -52,166 +40,191 @@ class IndexingResult:
     timed_out: bool = False
     skipped_binary: List[str] = field(default_factory=list)
     actions: List[Dict[str, str]] = field(default_factory=list)
+    error_reports: List[Dict[str, object]] = field(default_factory=list)
 
 
 class Indexer:
     calculator = EmbeddingCalculator()
 
-    def __init__(self, repo: str, branch: str, from_sha: str, to_sha: str, is_full: bool = False, ):
+    def __init__(
+        self,
+        repo: str,
+        branch: str,
+        from_sha: str,
+        to_sha: str,
+        is_full: bool = False,
+    ):
         self.repo = repo
         self.branch = branch
         self.is_full = is_full
         cfg = _resolve_db_cfg()
         self.db = create_persistence_adapter(cfg.provider, cfg=cfg)
-        self.sha0, self.sha1 = _resolve_range(from_sha, to_sha, is_full)
+        self.sha0, self.sha1 = self._resolve_range(from_sha, to_sha, is_full)
         self.start_time = time.time()
 
-    @staticmethod
-    def _get_ignore_spec() -> pathspec.PathSpec | None:
-        val = (os.environ.get("GITRAG_IGNORE") or "").strip()
-        if not val:
-            return None
-        patterns = [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
-        if not patterns:
-            return None
-        return pathspec.PathSpec.from_lines("gitignore", patterns)
-
     def _check_timeout(self):
-        if time.time() - self.start_time > SOFT_TIMEOUT_SECONDS:
-            logger.error("Soft timeout reached. Stopping indexing.")
-            exit(EXIT_CODE_TIMEOUT)
+        if SOFT_TIMEOUT_SECONDS > 0 and (
+            time.time() - self.start_time > SOFT_TIMEOUT_SECONDS
+        ):
+            logger.error("Indexing exceeded soft timeout of %ds", SOFT_TIMEOUT_SECONDS)
+            sys.exit(EXIT_CODE_TIMEOUT)
 
-    def _iter_git_changes(self) -> tuple[set[str], set[str]]:
-        """returns a set of processed files and a set of deleted files.
-        honors     """
-        raw = _run_git(["diff", "--name-status", "--no-renames", "-z", f"{self.sha0}..{self.sha1}"])
-        tokens = raw.strip("\x00").split("\x00")
-        process = set()
-        delete = set()
-        already_indexed = self.db.get_indexed_paths(repo=self.repo) if self.is_full else set()
-        binary_detector = text_detection.BinaryDetector()
+    @staticmethod
+    def _get_ignore_spec() -> pathspec.PathSpec:
+        ignore_env = os.environ.get("GITRAG_IGNORE", "")
+        # Standardize separators
+        raw = [p.strip() for p in ignore_env.replace(";", ",").split(",") if p.strip()]
+        return pathspec.PathSpec.from_lines("gitignore", raw)
+
+    def _iter_git_changes(self) -> Tuple[List[str], List[str]]:
+        to_process = []
+        to_delete = []
+
+        cmd = ["diff", "--name-status", "--no-renames", "-z", f"{self.sha0}..{self.sha1}"]
+        stdout = self._run_git(cmd)
+
         ignore_spec = self._get_ignore_spec()
-        for action, file in batched(tokens, 2):
-            if ignore_spec is None or not ignore_spec.match_file(file):
-                if action == "D":
-                    delete.add(file)
-                else:
-                    if not binary_detector.is_binary(file):
-                        process.add(file)
-        process -= already_indexed
-        return process, delete
+        detector = text_detection.BinaryDetector()
+
+        tokens = stdout.split("\0")
+        i = 0
+        while i < len(tokens) - 1:
+            status = tokens[i]
+            if not status:
+                i += 1
+                continue
+            path = tokens[i + 1]
+            i += 2
+
+            if ignore_spec.match_file(path):
+                continue
+
+            if status == "D":
+                to_delete.append(path)
+            elif status in ["A", "M"]:
+                if detector.is_binary(path):
+                    logger.info("Skipping binary file: %s", path)
+                    continue
+                to_process.append(path)
+
+        if self.is_full:
+            indexed = self.db.get_indexed_paths(repo=self.repo)
+            # Subtract already-indexed paths from the set of additions/modifications
+            to_process = list(set(to_process) - indexed)
+
+        return to_process, to_delete
 
     def index(self):
+        result = IndexingResult()
         to_process, to_delete = self._iter_git_changes()
         if to_delete:
             self.db.delete_batch(to_delete, repo=self.repo)
+            result.deleted_files += len(to_delete)
 
         chunk_stream: Iterable[Chunk] = itertools.chain.from_iterable(
-            (chunker.chunk_file(path, self.repo, self.branch) for path in to_process))
+            (chunker.chunk_file(path, self.repo, self.branch) for path in to_process)
+        )
 
         current_path = None
         accumulated_chunks = []
 
-        for batch in batched(chunk_stream, EMBEDDING_BATCH_SIZE):
-            # Extract text and compute embeddings for the max-capacity batch
+        for batch in more_itertools.batched(chunk_stream, EMBEDDING_BATCH_SIZE):
             self._check_timeout()
             text_chunks = [obj.chunk for obj in batch]
             try:
                 embeddings = self.calculator.calculate_batch(text_chunks)
             except Exception as e:
                 logger.error("Failed to compute embeddings for batch: %r", e)
+                for chunk_obj in batch:
+                    result.error_reports.append(
+                        {
+                            "message": str(e),
+                            "path": chunk_obj.path,
+                            "start_rc": chunk_obj.start_rc,
+                            "end_rc": chunk_obj.end_rc,
+                            "signature": chunk_obj.signature,
+                        }
+                    )
                 continue
 
-            # 2. Re-align the computed embeddings with their origin objects
             for chunk_obj, embedding in zip(batch, embeddings):
                 chunk_obj.embeddings = embedding
-
-                # 3. Path boundary detected
                 if current_path and chunk_obj.path != current_path:
-                    # Persist all data accumulated for the previous path
                     self.db.persist_batch(accumulated_chunks)
-
-                    # Update the state machine for the new path
+                    result.processed_files += 1
+                    result.processed_chunks += len(accumulated_chunks)
                     accumulated_chunks = []
-
-                # Accumulate the embedding for the current path
                 current_path = chunk_obj.path
                 accumulated_chunks.append(chunk_obj)
 
-            # 4. Stream exhausted. Persist the final path's data.
         if current_path is not None and accumulated_chunks:
             self.db.persist_batch(accumulated_chunks)
+            result.processed_files += 1
+            result.processed_chunks += len(accumulated_chunks)
+
+        for entry in result.error_reports:
+            logger.error(
+                "Indexing error: %s | %s | %s -> %s | %s",
+                entry["message"],
+                entry["path"],
+                entry["start_rc"],
+                entry["end_rc"],
+                entry["signature"] or "",
+            )
+
+        return result
 
 
-# for chunk_obj in all_chunk_objs:
-#    self._process_chunk(batch, chunk_obj, current_path, flush_indexes, persistance_queue)
+    def _run_git(self, args: List[str]) -> str:
+        cmd = ["git", "-c", "core.quotePath=false", *args]
+        logger.debug("Running: %s", " ".join(map(shlex.quote, cmd)))
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Git failed: {res.stderr}")
+        return res.stdout
 
 
-def _run_git(args: List[str]) -> str:
-    """Run a git command and return stdout as text."""
-    try:
-        out = subprocess.run(
-            ["git", "-c", "core.quotePath=false", *args],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return out.stdout
-    except FileNotFoundError as e:
-        raise RuntimeError("git not found on PATH") from e
-    except subprocess.CalledProcessError as e:
-        msg = e.stderr.strip() or e.stdout.strip() or "unknown git error"
-        raise RuntimeError(f"git {' '.join(args)} failed: {msg}") from e
+    def _resolve_range(
+        self, from_sha: Optional[str], to_sha: Optional[str], is_full: bool
+    ) -> Tuple[str, str]:
+        if to_sha is None:
+            to_sha = self._run_git(["rev-parse", "HEAD"]).strip()
+
+        if is_full:
+            # Diff from the empty tree to include everything in the current tree
+            from_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        elif from_sha is None:
+            try:
+                from_sha = self._run_git(["rev-parse", "HEAD^"]).strip()
+            except RuntimeError:
+                # Single-commit repo; fall back to empty tree
+                from_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+        return from_sha, to_sha
 
 
-def _resolve_range(from_sha: str = "HEAD^", to_sha: str = "HEAD", from_empty: bool = False, ) -> \
-        Tuple[str, str]:
-    """Return (from_ref, to_ref). Prefer args, fallback to last commit."""
-    try:
-        _run_git(["rev-parse", "HEAD^"])
-        from_sha = _run_git(["rev-parse", "HEAD"]).strip()
-    except Exception:
-        from_empty = True
+def _resolve_db_cfg():
+    url = os.environ.get("DATABASE_URL") or os.environ.get("TURSO_DATABASE_URL")
+    if not url:
+        return DBConfig(provider="postgres", url="postgresql://postgres:postgres@localhost:5432/gitrag")
 
-    from_sha = from_sha if not from_empty else _run_git(["hash-object", "-t", "tree", "/dev/null"]).strip()
-    return from_sha, to_sha
+    if url.startswith("libsql://") or "turso.io" in url:
+        return LibsqlConfig.from_parts(database_url=url)
+    return DBConfig(provider="postgres", url=url)
 
 
-def _resolve_db_cfg() -> DBConfig:
-    provider = (os.environ.get("DB_PROVIDER") or DEFAULT_DB_PROVIDER).lower()
-    database_url = os.environ.get("DATABASE_URL") or os.environ.get("TURSO_DATABASE_URL")
-
-    if not database_url:
-        raise RuntimeError(f"DATABASE_URL is required (provider='{provider}')")
-
-    auth_token = os.environ.get("DB_AUTH_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN")
-    if provider == "libsql":
-        table = os.environ.get("LIBSQL_TABLE") or DEFAULT_TABLE_NAME
-        fts_table = os.environ.get("LIBSQL_FTS_TABLE")
-        return LibsqlConfig.from_parts(
-            database_url=database_url,
-            auth_token=auth_token,
-            table=table,
-            fts_table=fts_table,
-        )
-
-    return DBConfig(provider=provider, url=database_url, auth_token=auth_token, table_map={})
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Process repository changes for indexing.")
-    parser.add_argument("repo", help="Repository identifier (e.g., namespace/repo)")
-    parser.add_argument("--full", action="store_true", help="Index all files.")
-    parser.add_argument("--branch", default=None, help="Optional branch name.")
-    parser.add_argument("--from-sha", default=None, help="Start SHA")
-    parser.add_argument("--to-sha", default=None, help="End SHA")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("repo")
+    parser.add_argument("--branch", default="main")
+    parser.add_argument("--from-sha")
+    parser.add_argument("--to-sha")
+    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
 
-    logger.info("Starting indexer: repo=%s branch=%s mode=%s",
-                args.repo, args.branch or "none", "full" if args.full else "delta")
     indexer = Indexer(args.repo, args.branch, args.from_sha, args.to_sha, args.full)
     indexer.index()
+
 
 if __name__ == "__main__":
     main()

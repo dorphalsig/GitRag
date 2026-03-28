@@ -21,11 +21,11 @@ class BinaryDetector:
             p = self._base_dir / p
 
         if not p.exists() or not p.is_file():
-            return False
+            return True
 
         try:
             result = self._magika.identify_path(p)
             return not result.output.is_text
         except Exception as e:
             logging.error("An error occured while identifying file as binary: %s", e, exc_info=True)
-            return False
+            return True
