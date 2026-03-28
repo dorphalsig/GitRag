@@ -1,142 +1,151 @@
 # GitRag
 
-**GitRag** is a lightweight, Git-native RAG (Retrieval-Augmented Generation) indexer and retriever. It is architected to operate efficiently within the resource constraints of free-tier environments like GitHub Actions and Hugging Face Spaces.
+GitRag is a Git-aware code indexing and retrieval toolkit.
 
-## 💡 Why GitRag?
+It focuses on two jobs:
+- indexing repository content into a vector-capable database
+- retrieving relevant code snippets, with optional repo/branch filtering and MCP exposure
 
-Unlike general-purpose RAG frameworks (like **QwenRag**) or high-throughput Rust-based ETL pipelines (like **CocoIndex**), GitRag is built for the Git lifecycle:
+The current codebase includes:
+- a Git-based indexer that can run in full or delta mode
+- Tree-sitter-based chunking for code and structured text handling for common data files
+- libSQL and PostgreSQL persistence backends
+- a retriever with optional reranking
+- an MCP server that exposes a `search_code` tool
 
-* **Git-Native Delta Logic**: Uses `git diff` and `ls-files` to process only what changed. It handles renames and deletions natively, preventing index bloat.
-* **Repo & Branch Awareness**: Supports optional filtering by `repo` and `branch` during indexing and retrieval to narrow the search universe and improve precision.
-* **Edge-First Hybrid Search**: Defaults to **libSQL (Turso)** for portable, low-latency hybrid search (Vector + BM25) on the edge.
-* **Structured AST Chunking**: Uses Tree-sitter to break code into logical units (functions, classes) rather than arbitrary line counts.
+## What GitRag does well
 
-## 🛠 Configuration
+- **Indexes Git changes** instead of blindly reprocessing everything on every run
+- **Understands deletions** and removes deleted paths from the index
+- **Supports full re-indexing** with resume-friendly behavior when combined with remote persistence
+- **Filters retrieval by repo and branch** when you want narrower search scope
+- **Skips ignored paths** via `GITRAG_IGNORE`
+- **Can serve search over MCP** with authentication enabled by default
 
-GitRag selects its persistence layer based on the `DB_PROVIDER` environment variable.
+## Configuration
 
-### 1. libSQL / Turso (Default)
-Recommended for edge deployments and serverless environments.
-* `DB_PROVIDER`: `libsql`
-* `TURSO_DATABASE_URL`: Your database endpoint (e.g., `libsql://db-name.turso.io`).
-* `TURSO_AUTH_TOKEN`: Your access token.
+GitRag selects its persistence backend with `DB_PROVIDER`.
 
-### 2. PostgreSQL / pgvector
-Recommended for existing database clusters.
-* `DB_PROVIDER`: `postgres`
-* `DATABASE_URL`: Your connection string (e.g., `postgresql://user:pass@host:5432/db`).
+### libSQL
 
-### 3. Exclusions
-To exclude certain files or directories from indexing,
-* `GITRAG_IGNORE`: A comma- or semicolon- separated list of glob patterns that will not be indexed.
+Use `DB_PROVIDER=libsql` and provide:
+- `DATABASE_URL` (the code also accepts `TURSO_DATABASE_URL`)
+- `DB_AUTH_TOKEN` (the code also accepts `TURSO_AUTH_TOKEN`)
 
-## 📦 Deployment
+### PostgreSQL
 
-### GitHub Action (The Indexer)
-Automate your index updates on every push. Create `.github/workflows/index.yml`:
+Use `DB_PROVIDER=postgres` and provide:
+- `DATABASE_URL`
+- `DB_AUTH_TOKEN`
+
+### Excluding files
+
+Use `GITRAG_IGNORE` with a comma- or semicolon-separated list of glob patterns.
+
+Example:
+
+```bash
+export GITRAG_IGNORE="dist/**,build/**,*.min.js"
+```
+
+## Indexing behavior
+
+The indexer accepts:
+- a required `repo` identifier
+- `--full` for a full scan
+- `--branch` for branch-aware indexing
+- `--from-sha` and `--to-sha` for delta indexing across a commit range
+
+For long runs, GitRag also supports a soft timeout via the `SOFT_TIMEOUT` environment variable. When the timeout is exceeded, the indexer exits with code `75`, which is useful for retry-based workflows.
+
+## GitHub Action
+
+The repository includes a composite GitHub Action in `action.yml` for running the indexer.
+
+Basic example:
 
 ```yaml
 name: GitRag Indexing
 
 on:
   push:
-    branches: [ "master" ]
-  workflow_dispatch:
-    inputs:
-      full_scan:
-        description: 'Perform a full repository scan?'
-        type: boolean
-        default: false
+    branches: ["master"]
 
 jobs:
   index:
-    uses: dorphalsig/gitrag/.github/workflows/GitRag.yml@master
-    with:
-      repo: ${{ github.repository }}
-      branch: ${{ github.ref_name }}
-      db_provider: "libsql" or "postgres"
-      full_index: ${{ inputs.full_scan || false }}
-    secrets:
-      DATABASE_URL: libsql://<db_name>.aws-eu-west-1.turso.io OR postgres://user@host/db
-      DB_AUTH_TOKEN: ${{ secrets.dark }}
-```
-
-### Handling Timeouts for Large Repositories
-
-For large repositories (500+ files), indexing may exceed GitHub Actions' 6-hour timeout. GitRag supports **soft timeouts** with automatic resume via database checkpointing.
-
-**How Resume Works:**
-1. On startup with `full_index: true`, GitRag queries the database for already-indexed paths
-2. Files already in the database are skipped during processing
-3. Since the database is remote, checkpointing works across different workflow runs and runners
-4. When a soft timeout is exceeded, the indexer exits with code 75, allowing the workflow to retry
-
-**Recommended Retry Pattern:**
-
-```yaml
-name: GitRag Indexing with Retry
-
-on:
-  push:
-    branches: [ "master" ]
-  workflow_dispatch:
-    inputs:
-      full_scan:
-        description: 'Perform a full repository scan?'
-        type: boolean
-        default: false
-
-jobs:
-  index:
-    uses: dorphalsig/gitrag/.github/workflows/GitRag.yml@master
-    with:
-      repo: ${{ github.repository }}
-      db_provider: "libsql"
-      full_index: ${{ inputs.full_scan || false }}
-      soft_timeout: 14400  # 4 hours - adjust based on repo size
-    secrets:
-      DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      DB_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-
-  # Retry on timeout - dispatches new workflow with fresh 6-hour window
-  retry-on-timeout:
-    needs: index
-    if: failure()
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger retry with full_index
-        run: |
-          gh workflow run "${{ github.workflow }}" \
-            --ref "${{ github.ref }}" \
-            -f full_scan=true \
-            -f db_provider="libsql"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+      - uses: dorphalsig/gitrag@master
+        with:
+          repo: ${{ github.repository }}
+          db_provider: libsql
+          database_url: ${{ secrets.TURSO_DATABASE_URL }}
+          db_auth_token: ${{ secrets.TURSO_AUTH_TOKEN }}
+          branch: ${{ github.ref_name }}
 ```
 
-**Important:** Always use `full_index: true` on retry to trigger the resume mechanism. Incremental mode (`--from-sha`/`--to-sha`) does not use checkpointing.
+Optional inputs supported by the action:
+- `full_index`
+- `soft_timeout`
 
-### Hugging Face Spaces (The Retriever)
-Deploy as a **Docker** Space to host a search API or MCP server. For this use the [Dockerfile](Dockerfile).
+If `full_index` is not enabled, the action passes the Git commit range to the indexer so it can process changes incrementally.
 
-**Requirements for HF Spaces Free:**
-* **SDK**: Docker.
-* **Hardware**: Minimum **"Standard CPU" (2 vCPU, 16GB RAM)**.
-* **Secrets**: Add your `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in the Space settings.
+## MCP server
 
-## 🖥 Hardware Requirements
+GitRag ships an MCP server package that exposes a `search_code` tool backed by the retriever.
 
-| Component | Minimum | Recommended | Why? |
-| :--- | :--- | :--- | :--- |
-| **Indexer** | 2 vCPU, 4GB RAM | 2 vCPU, 7GB RAM | Standard GitHub Runners handle embedding tasks easily. |
-| **Retriever** | 2 vCPU, 16GB RAM | 4 vCPU, 16GB RAM | The **Qwen3-Reranker-0.6B** model requires significant RAM to load and stay resident. |
+The current server implementation creates a FastMCP server and returns:
+- structured result objects
+- a markdown rendering of the matched snippets
+- XML-safe formatted snippets for downstream consumers
 
-*Note: On free CPU tiers, expect a ~10 second delay for the first query as the model loads into memory.* ☕
+### MCP auth setup
 
-## 🏗 Supported Environments
-* **Code**: Kotlin, Java, Dart, Python, and more via Tree-sitter.
-* **Data**: Markdown (with breadcrumbs), JSON/JSONL, YAML, XML, TOML.
-* **Interfaces**: Standard Python API and Model Context Protocol (MCP) server.
+Authentication is enabled by default.
 
-## 📜 License
-Released under the MIT License.
+To run the authenticated MCP server, set:
+- `SCALEKIT_ENVIRONMENT_URL`
+- `SCALEKIT_CLIENT_ID`
+- `SCALEKIT_RESOURCE_ID`
+
+Optional:
+- `MCP_BASE_URL` — overrides the callback/base URL used by the Scalekit provider. If unset, GitRag falls back to `http://127.0.0.1:8000/mcp`.
+
+Auth behavior is controlled like this:
+- `GITRAG_MCP_DISABLE_AUTH=1` disables auth
+- otherwise, `GITRAG_MCP_REQUIRE_AUTH=true|false` can explicitly enable or disable auth
+- if neither variable is set, auth stays enabled
+
+For local development, disabling auth can be useful while wiring up clients or tests. It should not be treated as the default production setup.
+
+### Minimal server wiring
+
+```python
+from gitrag_mcp_server.server import create_mcp_server
+
+mcp = create_mcp_server(retriever=my_retriever)
+mcp.run(transport="sse", port=8000, host="0.0.0.0")
+```
+
+## Retrieval
+
+The retriever returns the top matching chunks for a query. It can:
+- search with vector + text persistence backends
+- limit results with `top_k`
+- scope results by `repo` and `branch`
+- optionally rerank candidates with `Qwen/Qwen3-Reranker-0.6B`
+
+## Supported content
+
+Current tests and code cover:
+- source files chunked through Tree-sitter
+- markdown
+- JSON / JSONL
+- YAML
+- XML
+- TOML
+
+## License
+
+MIT.
