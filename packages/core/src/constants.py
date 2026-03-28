@@ -33,6 +33,8 @@ NEWLINE_WINDOW = 2_048
 FALLBACK_OVERLAP_RATIO = 0.10
 
 # Document Chunker constants
+DOC_SOFT_MAX_BYTES = SOFT_MAX_BYTES * 2   # 2048 — doc soft cap (4 bytes/token for prose)
+DOC_HARD_CAP_BYTES = SOFT_MAX_BYTES * 4   # 4096 — doc hard cap
 DOC_OVERLAP_BYTES = 256
 DOC_MIN_CHUNK_BYTES = 512
 DOC_GRAMMAR_VERSION = "doc-chunker-v1"
