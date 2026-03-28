@@ -11,14 +11,14 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import more_itertools
 import pathspec
+
+import text_detection
 from Calculators.EmbeddingCalculator import EmbeddingCalculator
 from Chunker import chunker
 from Chunker.Chunk import Chunk
-from Persistence.Persist import (DBConfig, LibsqlConfig, PersistenceAdapter,
-                                 create_persistence_adapter)
+from Persistence.Persist import (DBConfig, LibsqlConfig, create_persistence_adapter)
 from constants import (EMBEDDING_BATCH_SIZE, EXIT_CODE_TIMEOUT,
                        SOFT_TIMEOUT_SECONDS)
-import text_detection
 
 LOG4J_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -79,8 +79,8 @@ class Indexer:
     def _iter_git_changes(self) -> Tuple[List[str], List[str]]:
         to_process = []
         to_delete = []
-
-        cmd = ["diff", "--name-status", "--no-renames", "-z", f"{self.sha0}..{self.sha1}"]
+        sha0,sha1 = self._resolve_range(self.sha0, self.sha1, self.is_full)
+        cmd = ["diff", "--name-status", "--no-renames", "-z", f"{sha0}..{sha1}"]
         stdout = self._run_git(cmd)
 
         ignore_spec = self._get_ignore_spec()
@@ -183,22 +183,21 @@ class Indexer:
             raise RuntimeError(f"Git failed: {res.stderr}")
         return res.stdout
 
-
     def _resolve_range(
-        self, from_sha: Optional[str], to_sha: Optional[str], is_full: bool
+            self, from_sha: Optional[str], to_sha: Optional[str], is_full: bool
     ) -> Tuple[str, str]:
         if to_sha is None:
             to_sha = self._run_git(["rev-parse", "HEAD"]).strip()
 
         if is_full:
             # Diff from the empty tree to include everything in the current tree
-            from_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            from_sha = self._run_git(["hash-object", "-t", "tree", "/dev/null"])
         elif from_sha is None:
             try:
                 from_sha = self._run_git(["rev-parse", "HEAD^"]).strip()
             except RuntimeError:
                 # Single-commit repo; fall back to empty tree
-                from_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+                from_sha = self._run_git(["hash-object", "-t", "tree", "/dev/null"])
 
         return from_sha, to_sha
 
